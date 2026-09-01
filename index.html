@@ -9,25 +9,26 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#EEF1EA;
+    --bg:#F3EEE1;
     --surface:#FFFFFF;
-    --surface-alt:#F5F3ED;
-    --ink:#1C2B39;
-    --ink-soft:#5B6B66;
-    --ink-faint:#94A39C;
-    --gold:#B8892B;
-    --gold-deep:#8C6A1F;
-    --gold-bg:#F5EBD3;
-    --wine:#8B3A3A;
-    --wine-deep:#6E2C2C;
-    --wine-bg:#F3E3E1;
-    --moss:#4F6B52;
-    --moss-bg:#E4EBE1;
-    --line:#D9DED3;
+    --surface-alt:#EAE2CE;
+    --ink:#2B2820;
+    --ink-soft:#6B6452;
+    --ink-faint:#9C9480;
+    --gold:#C08A34;
+    --gold-deep:#93681F;
+    --gold-bg:#F3E4C4;
+    --wine:#B2603E;
+    --wine-deep:#8A4530;
+    --wine-bg:#F1DDD1;
+    --moss:#3F6B47;
+    --moss-deep:#2C4E32;
+    --moss-bg:#DCE7D8;
+    --line:#DED2B4;
     --radius-s:10px;
     --radius-m:16px;
     --radius-l:24px;
-    --shadow-card:0 1px 2px rgba(28,43,57,0.06), 0 6px 20px rgba(28,43,57,0.07);
+    --shadow-card:0 1px 2px rgba(58,46,20,0.07), 0 10px 28px rgba(58,46,20,0.09);
     --font-display:'Fraunces', Georgia, serif;
     --font-body:'Inter', -apple-system, sans-serif;
     --font-mono:'IBM Plex Mono', 'Courier New', monospace;
@@ -157,9 +158,18 @@
     padding:8px 0 4px;
   }
   .seal{position:relative; width:172px; height:172px; flex:none;}
-  .seal svg{width:100%;height:100%;transform:rotate(-90deg);}
+  .seal::before{
+    content:'';
+    position:absolute;
+    inset:-22px;
+    border-radius:50%;
+    background:radial-gradient(circle, rgba(192,138,52,0.22) 0%, rgba(63,107,71,0.14) 45%, rgba(63,107,71,0) 72%);
+    filter:blur(6px);
+    z-index:0;
+  }
+  .seal svg{position:relative; z-index:1; width:100%;height:100%;transform:rotate(-90deg);}
   .seal-center{
-    position:absolute; inset:0;
+    position:absolute; inset:0; z-index:2;
     display:flex; flex-direction:column; align-items:center; justify-content:center;
     text-align:center;
   }
@@ -544,23 +554,23 @@
 
   /* ================= CONFIG ================= */
   var DESPESA_CATS = [
-    {id:'moradia', label:'Moradia', color:'#3F5A42'},
-    {id:'alimentacao', label:'Alimentação', color:'#B8892B'},
-    {id:'transporte', label:'Transporte', color:'#45647A'},
-    {id:'saude', label:'Saúde', color:'#8B3A3A'},
-    {id:'educacao', label:'Educação', color:'#3F7066'},
-    {id:'lazer', label:'Lazer', color:'#7A4F6B'},
-    {id:'assinaturas', label:'Assinaturas', color:'#33475A'},
-    {id:'cuidados', label:'Cuidados Pessoais', color:'#A85C63'},
-    {id:'filhos_pets', label:'Filhos/Pets', color:'#6E8B5A'},
-    {id:'poupanca', label:'Poupança e metas', color:'#8C6A1F'},
-    {id:'outros_d', label:'Outros', color:'#6B7280'}
+    {id:'moradia', label:'Moradia', color:'#6B4A34'},
+    {id:'alimentacao', label:'Alimentação', color:'#C08A34'},
+    {id:'transporte', label:'Transporte', color:'#5C7A8A'},
+    {id:'saude', label:'Saúde', color:'#B2603E'},
+    {id:'educacao', label:'Educação', color:'#3F6B47'},
+    {id:'lazer', label:'Lazer', color:'#8B5A6B'},
+    {id:'assinaturas', label:'Assinaturas', color:'#4A4436'},
+    {id:'cuidados', label:'Cuidados Pessoais', color:'#B27A78'},
+    {id:'filhos_pets', label:'Filhos/Pets', color:'#7C9070'},
+    {id:'poupanca', label:'Poupança e metas', color:'#93681F'},
+    {id:'outros_d', label:'Outros', color:'#7A7364'}
   ];
   var RECEITA_CATS = [
-    {id:'salario', label:'Salário líquido', color:'#4F6B52'},
-    {id:'extra', label:'Renda extra/freelance', color:'#B8892B'},
-    {id:'decimo', label:'13º/Bônus', color:'#45647A'},
-    {id:'outros_r', label:'Outros rendimentos', color:'#6B7280'}
+    {id:'salario', label:'Salário líquido', color:'#3F6B47'},
+    {id:'extra', label:'Renda extra/freelance', color:'#C08A34'},
+    {id:'decimo', label:'13º/Bônus', color:'#B2603E'},
+    {id:'outros_r', label:'Outros rendimentos', color:'#7A7364'}
   ];
   var DIVISAO_TIPOS = [
     {id:'compartilhado', label:'Compartilhado'},
@@ -574,7 +584,7 @@
   function catById(id, tipo){
     var list = tipo === 'receita' ? RECEITA_CATS : DESPESA_CATS;
     for (var i=0;i<list.length;i++){ if(list[i].id===id) return list[i]; }
-    return {id:id, label:'Outros', color:'#6B7280'};
+    return {id:id, label:'Outros', color:'#7A7364'};
   }
 
   /* ================= STATE ================= */
@@ -896,7 +906,17 @@
   ];
 
   /* ================= RENDER: ROOT ================= */
+  var renderScheduled = false;
   function render(){
+    if (renderScheduled) return;
+    renderScheduled = true;
+    setTimeout(function(){
+      renderScheduled = false;
+      doRender();
+    }, 0);
+  }
+
+  function doRender(){
     if (!state.cloud.connected){
       var appEl0 = document.getElementById('app');
       appEl0.innerHTML = renderOnboarding();
@@ -1046,10 +1066,10 @@
     } else {
       html += '<div style="position:relative;height:200px;"><canvas id="chart-distrib" role="img" aria-label="Gráfico de distribuição da renda entre compartilhado, individual e sobra"></canvas></div>';
       html += '<div class="legend">'
-        + '<span class="legend-item"><span class="sw" style="background:#33475A"></span>Compartilhado · ' + fmtBRL(sum.totalCompartilhado) + '</span>'
-        + '<span class="legend-item"><span class="sw" style="background:#7A4F6B"></span>Individual ' + escapeHtml(state.settings.nome1) + ' · ' + fmtBRL(sum.individual.p1) + '</span>'
-        + '<span class="legend-item"><span class="sw" style="background:#3F7066"></span>Individual ' + escapeHtml(state.settings.nome2) + ' · ' + fmtBRL(sum.individual.p2) + '</span>'
-        + '<span class="legend-item"><span class="sw" style="background:#B8892B"></span>Sobra · ' + fmtBRL(Math.max(saldo,0)) + '</span>'
+        + '<span class="legend-item"><span class="sw" style="background:#4A4436"></span>Compartilhado · ' + fmtBRL(sum.totalCompartilhado) + '</span>'
+        + '<span class="legend-item"><span class="sw" style="background:#8B5A6B"></span>Individual ' + escapeHtml(state.settings.nome1) + ' · ' + fmtBRL(sum.individual.p1) + '</span>'
+        + '<span class="legend-item"><span class="sw" style="background:#5C7A8A"></span>Individual ' + escapeHtml(state.settings.nome2) + ' · ' + fmtBRL(sum.individual.p2) + '</span>'
+        + '<span class="legend-item"><span class="sw" style="background:#C08A34"></span>Sobra · ' + fmtBRL(Math.max(saldo,0)) + '</span>'
         + '</div>';
     }
     html += '</div>';
@@ -1237,15 +1257,30 @@
       + '<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:6px 0;"><span style="color:var(--ink-soft);">Sua parte justa do compartilhado (' + (sel===1?state.settings.split1:state.settings.split2) + '%)</span><span style="font-family:var(--font-mono);font-weight:600;">' + fmtBRL(justo) + '</span></div>'
       + '</div>';
 
-    html += '<h2 class="section-title" style="margin-top:0;">Gastos individuais por categoria</h2>';
+    html += '<div class="chart-card card" style="margin-bottom:14px;">'
+      + '<div class="chart-card-head"><h3>Por que ' + (diffForSel>=0?'devem a':'você deve a') + '</h3></div>'
+      + '<p style="font-size:12px;color:var(--ink-soft);margin:-4px 0 10px;">Comparando o que ' + escapeHtml(nomeSel) + ' pagou de despesas compartilhadas com a parte que caberia (' + (sel===1?state.settings.split1:state.settings.split2) + '%).</p>'
+      + '<div style="position:relative;height:100px;"><canvas id="chart-pessoa-justo" role="img" aria-label="Gráfico comparando quanto a pessoa pagou de compartilhado com a parte justa dela"></canvas></div>'
+      + '</div>';
+
+    html += '<div class="chart-card card" style="margin-bottom:14px;">'
+      + '<div class="chart-card-head"><h3>Gastos individuais por categoria</h3></div>';
     if (Object.keys(porCatInd).length === 0){
-      html += emptyState('Nenhum gasto individual', nomeSel + ' ainda não tem despesas individuais lançadas neste mês.');
+      html += '<div class="empty" style="padding:28px 12px;"><p class="small">' + escapeHtml(nomeSel) + ' ainda não tem despesas individuais lançadas neste mês.</p></div>';
     } else {
-      html += '<div class="card">' + Object.keys(porCatInd).sort(function(a,b){return porCatInd[b]-porCatInd[a];}).map(function(id){
+      html += '<div style="position:relative;height:200px;"><canvas id="chart-pessoa-donut" role="img" aria-label="Gráfico de gastos individuais por categoria"></canvas></div>';
+      html += '<div class="legend">' + Object.keys(porCatInd).sort(function(a,b){return porCatInd[b]-porCatInd[a];}).map(function(id){
         var c = catById(id,'despesa');
-        return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--line);"><span style="width:9px;height:9px;border-radius:3px;background:'+c.color+';flex:none;"></span><span style="flex:1;font-size:13px;">'+c.label+'</span><span style="font-family:var(--font-mono);font-weight:600;font-size:13px;">'+fmtBRL(porCatInd[id])+'</span></div>';
+        return '<span class="legend-item"><span class="sw" style="background:'+c.color+'"></span>' + c.label + ' · ' + fmtBRL(porCatInd[id]) + '</span>';
       }).join('') + '</div>';
     }
+    html += '</div>';
+
+    html += '<div class="chart-card card">'
+      + '<div class="chart-card-head"><h3>Sobra de ' + escapeHtml(nomeSel) + ' (6 meses)</h3></div>'
+      + '<div style="position:relative;height:170px;"><canvas id="chart-pessoa-sobra" role="img" aria-label="Gráfico do valor que sobrou para essa pessoa nos últimos seis meses"></canvas></div>'
+      + '</div>';
+
     return html;
   }
 
@@ -1390,7 +1425,7 @@
     var data = m.data || (tx && tx.data) || todayISO();
     var valor = m.valor != null ? m.valor : (tx ? tx.valor : '');
     var desc = m.descricao != null ? m.descricao : (tx ? tx.descricao : '');
-    var divisao = m.divisao || (tx && tx.divisao) || 'compartilhado';
+    var divisao = m.divisao || (tx && tx.divisao) || 'individual';
 
     return '<div class="overlay" data-action="overlay-close">'
       + '<div class="sheet" data-stop>'
@@ -1402,8 +1437,8 @@
       +   '</div>'
       +   (tipo==='despesa' ? (
       '<div class="seg">'
-      +     '<button class="' + (divisao==='compartilhado'?'active compartilhado':'') + '" data-action="modal-set-divisao" data-divisao="compartilhado">Compartilhado</button>'
       +     '<button class="' + (divisao==='individual'?'active individual':'') + '" data-action="modal-set-divisao" data-divisao="individual">Individual</button>'
+      +     '<button class="' + (divisao==='compartilhado'?'active compartilhado':'') + '" data-action="modal-set-divisao" data-divisao="compartilhado">Compartilhado</button>'
       +   '</div>'
       +   '<p style="font-size:11px;color:var(--ink-faint);margin:-10px 0 16px;">Compartilhado entra na divisão do casal (' + state.settings.split1 + '%/' + state.settings.split2 + '%). Individual fica só com quem lançou.</p>'
       ) : '')
@@ -1488,6 +1523,17 @@
     chartRefs = {};
   }
 
+  function mkChart(key, el, config){
+    if (!el) return;
+    try{
+      if (chartRefs[key]){ try{ chartRefs[key].destroy(); }catch(e){} }
+      chartRefs[key] = new Chart(el, config);
+    } catch(e){ /* one broken chart should never take down the rest */ }
+  }
+
+  var PESSOA1_COLOR = '#8B5A6B';
+  var PESSOA2_COLOR = '#5C7A8A';
+
   function renderCharts(){
     if (typeof Chart === 'undefined') return;
     if (state.ui.tab === 'inicio'){
@@ -1497,59 +1543,95 @@
       var receitasTotal = sumTipo(mtx,'receita');
       var saldoAtual = receitasTotal - sumTipo(mtx,'despesa');
 
-      var distribEl = document.getElementById('chart-distrib');
-      if (distribEl && receitasTotal > 0){
-        var distribLabels = ['Compartilhado', 'Individual ' + state.settings.nome1, 'Individual ' + state.settings.nome2, 'Sobra'];
-        var distribData = [sum.totalCompartilhado, sum.individual.p1, sum.individual.p2, Math.max(saldoAtual,0)];
-        var distribColors = ['#33475A', '#7A4F6B', '#3F7066', '#B8892B'];
-        chartRefs.distrib = new Chart(distribEl, {
+      if (receitasTotal > 0){
+        mkChart('distrib', document.getElementById('chart-distrib'), {
           type:'doughnut',
-          data:{ labels: distribLabels, datasets:[{ data: distribData, backgroundColor: distribColors, borderColor:'#FFFFFF', borderWidth:2 }] },
+          data:{ labels: ['Compartilhado', 'Individual ' + state.settings.nome1, 'Individual ' + state.settings.nome2, 'Sobra'],
+                 datasets:[{ data: [sum.totalCompartilhado, sum.individual.p1, sum.individual.p2, Math.max(saldoAtual,0)], backgroundColor: ['#4A4436', PESSOA1_COLOR, PESSOA2_COLOR, '#C08A34'], borderColor:'#FFFFFF', borderWidth:2 }] },
           options:{ responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.label+': '+fmtBRL(ctx.parsed); } } } } }
         });
       }
 
-      var donutEl = document.getElementById('chart-donut');
-      if (donutEl && Object.keys(porCat).length){
+      if (Object.keys(porCat).length){
         var ids = Object.keys(porCat).sort(function(a,b){return porCat[b]-porCat[a];});
-        chartRefs.donut = new Chart(donutEl, {
+        mkChart('donut', document.getElementById('chart-donut'), {
           type:'doughnut',
           data:{ labels: ids.map(function(id){return catById(id,'despesa').label;}),
                  datasets:[{ data: ids.map(function(id){return porCat[id];}), backgroundColor: ids.map(function(id){return catById(id,'despesa').color;}), borderColor:'#FFFFFF', borderWidth:2 }] },
           options:{ responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.label+': '+fmtBRL(ctx.parsed); } } } } }
         });
       }
-      var trendEl = document.getElementById('chart-trend');
-      if (trendEl){
-        var trend = last6MonthsSaldo();
-        chartRefs.trend = new Chart(trendEl, {
-          type:'bar',
-          data:{ labels: trend.map(function(t){return t.label;}),
-                 datasets:[{ data: trend.map(function(t){return t.saldo;}), backgroundColor: trend.map(function(t){return t.saldo<0?'#8B3A3A':'#B8892B';}), borderRadius:4, maxBarThickness:28 }] },
-          options:{ responsive:true, maintainAspectRatio:false,
-            plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return fmtBRL(ctx.parsed.y); } } } },
-            scales:{ y:{ grid:{ color:'#E1E0D9' }, ticks:{ callback:function(v){ return 'R$ '+v; }, font:{size:10.5} } }, x:{ grid:{display:false}, ticks:{font:{size:11}} } } }
-        });
-      }
+      var trend = last6MonthsSaldo();
+      mkChart('trend', document.getElementById('chart-trend'), {
+        type:'bar',
+        data:{ labels: trend.map(function(t){return t.label;}),
+               datasets:[{ data: trend.map(function(t){return t.saldo;}), backgroundColor: trend.map(function(t){return t.saldo<0?'#B2603E':'#C08A34';}), borderRadius:4, maxBarThickness:28 }] },
+        options:{ responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return fmtBRL(ctx.parsed.y); } } } },
+          scales:{ y:{ grid:{ color:'#E4DAC0' }, ticks:{ callback:function(v){ return 'R$ '+v; }, font:{size:10.5} } }, x:{ grid:{display:false}, ticks:{font:{size:11}} } } }
+      });
     }
     if (state.ui.tab === 'categorias'){
-      var budgetEl = document.getElementById('chart-budget');
-      if (budgetEl){
-        var mtx2 = monthTransactions(state.ui.year, state.ui.month);
-        var porCat2 = sumPorCategoria(mtx2, 'despesa');
-        var catsWithBudget = DESPESA_CATS.filter(function(c){ return (state.budgets[c.id]||0) > 0 || (porCat2[c.id]||0) > 0; });
-        chartRefs.budget = new Chart(budgetEl, {
-          type:'bar',
-          data:{ labels: catsWithBudget.map(function(c){return c.label;}),
-            datasets:[
-              { label:'Orçado', data: catsWithBudget.map(function(c){return state.budgets[c.id]||0;}), backgroundColor:'#D9DED3', borderRadius:4 },
-              { label:'Gasto', data: catsWithBudget.map(function(c){return porCat2[c.id]||0;}), backgroundColor: catsWithBudget.map(function(c){return c.color;}), borderRadius:4 }
-            ] },
-          options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false,
-            plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.dataset.label+': '+fmtBRL(ctx.parsed.x); } } } },
-            scales:{ x:{ grid:{color:'#E1E0D9'}, ticks:{ callback:function(v){return 'R$ '+v;}, font:{size:10} } }, y:{ grid:{display:false}, ticks:{font:{size:11.5}} } } }
+      var mtx2 = monthTransactions(state.ui.year, state.ui.month);
+      var porCat2 = sumPorCategoria(mtx2, 'despesa');
+      var catsWithBudget = DESPESA_CATS.filter(function(c){ return (state.budgets[c.id]||0) > 0 || (porCat2[c.id]||0) > 0; });
+      mkChart('budget', document.getElementById('chart-budget'), {
+        type:'bar',
+        data:{ labels: catsWithBudget.map(function(c){return c.label;}),
+          datasets:[
+            { label:'Orçado', data: catsWithBudget.map(function(c){return state.budgets[c.id]||0;}), backgroundColor:'#E2D6B8', borderRadius:4 },
+            { label:'Gasto', data: catsWithBudget.map(function(c){return porCat2[c.id]||0;}), backgroundColor: catsWithBudget.map(function(c){return c.color;}), borderRadius:4 }
+          ] },
+        options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.dataset.label+': '+fmtBRL(ctx.parsed.x); } } } },
+          scales:{ x:{ grid:{color:'#E4DAC0'}, ticks:{ callback:function(v){return 'R$ '+v;}, font:{size:10} } }, y:{ grid:{display:false}, ticks:{font:{size:11.5}} } } }
+      });
+    }
+    if (state.ui.tab === 'pessoas'){
+      var sel = state.ui.pessoaSel === 2 ? 2 : 1;
+      var nomeSel = sel === 1 ? state.settings.nome1 : state.settings.nome2;
+      var pessoaColor = sel === 1 ? PESSOA1_COLOR : PESSOA2_COLOR;
+      var mtxP = monthTransactions(state.ui.year, state.ui.month);
+      var sumP = splitSummary(mtxP);
+      var porCatInd = {};
+      despesasIndividuais(mtxP, nomeSel).forEach(function(t){ porCatInd[t.categoria] = (porCatInd[t.categoria]||0) + t.valor; });
+
+      if (Object.keys(porCatInd).length){
+        var idsP = Object.keys(porCatInd).sort(function(a,b){return porCatInd[b]-porCatInd[a];});
+        mkChart('pessoaDonut', document.getElementById('chart-pessoa-donut'), {
+          type:'doughnut',
+          data:{ labels: idsP.map(function(id){return catById(id,'despesa').label;}),
+                 datasets:[{ data: idsP.map(function(id){return porCatInd[id];}), backgroundColor: idsP.map(function(id){return catById(id,'despesa').color;}), borderColor:'#FFFFFF', borderWidth:2 }] },
+          options:{ responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.label+': '+fmtBRL(ctx.parsed); } } } } }
         });
       }
+
+      var pago = sel===1 ? sumP.pago.p1 : sumP.pago.p2;
+      var justo = sel===1 ? sumP.justo.p1 : sumP.justo.p2;
+      mkChart('pessoaJusto', document.getElementById('chart-pessoa-justo'), {
+        type:'bar',
+        data:{ labels:['Pagou de compartilhado', 'Parte justa'],
+               datasets:[{ data:[pago, justo], backgroundColor:[pessoaColor, '#E2D6B8'], borderRadius:6, maxBarThickness:46 }] },
+        options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return fmtBRL(ctx.parsed.x); } } } },
+          scales:{ x:{ grid:{color:'#E4DAC0'}, ticks:{ callback:function(v){return 'R$ '+v;}, font:{size:10} } }, y:{ grid:{display:false}, ticks:{font:{size:12,weight:'500'}} } } }
+      });
+
+      var sobraTrend = [];
+      for (var i=5;i>=0;i--){
+        var d = new Date(state.ui.year, state.ui.month - i, 1);
+        var mtxM = monthTransactions(d.getFullYear(), d.getMonth());
+        var sM = splitSummary(mtxM);
+        sobraTrend.push({ label: MESES_ABR[d.getMonth()], sobra: sel===1 ? sM.sobra.p1 : sM.sobra.p2 });
+      }
+      mkChart('pessoaSobra', document.getElementById('chart-pessoa-sobra'), {
+        type:'bar',
+        data:{ labels: sobraTrend.map(function(t){return t.label;}),
+               datasets:[{ data: sobraTrend.map(function(t){return t.sobra;}), backgroundColor: sobraTrend.map(function(t){return t.sobra<0?'#B2603E':pessoaColor;}), borderRadius:4, maxBarThickness:28 }] },
+        options:{ responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return fmtBRL(ctx.parsed.y); } } } },
+          scales:{ y:{ grid:{ color:'#E4DAC0' }, ticks:{ callback:function(v){ return 'R$ '+v; }, font:{size:10.5} } }, x:{ grid:{display:false}, ticks:{font:{size:11}} } } }
+      });
     }
   }
 
@@ -1639,7 +1721,7 @@
     var goal = state.goals.find(function(g){return g.id===goalId;});
     if (!goal) return;
     var updatedGoal = Object.assign({}, goal, { atual: goal.atual + valor });
-    var tx = { id: genId(), tipo:'despesa', valor:valor, categoria:'poupanca', data: todayISO(), quem:quem, descricao:'Aporte: ' + goal.titulo, criadoEm: Date.now(), goalId: goalId };
+    var tx = { id: genId(), tipo:'despesa', valor:valor, categoria:'poupanca', data: todayISO(), quem:quem, descricao:'Aporte: ' + goal.titulo, criadoEm: Date.now(), goalId: goalId, divisao:'individual' };
     state.ui.modal = null;
     showToast('Aporte registrado');
     render();
