@@ -644,6 +644,25 @@
   function clearLocalCloudSetup(){
     try{ window.localStorage.removeItem(LS_CONFIG_KEY); window.localStorage.removeItem(LS_HOUSEHOLD_KEY); }catch(e){}
   }
+  function extractConfigObjectText(raw){
+    var idx = raw.indexOf('firebaseConfig');
+    var searchFrom = idx > -1 ? idx : 0;
+    var braceStart = raw.indexOf('{', searchFrom);
+    if (braceStart === -1) return raw;
+    var depth = 0;
+    for (var i = braceStart; i < raw.length; i++){
+      if (raw[i] === '{') depth++;
+      else if (raw[i] === '}'){ depth--; if (depth === 0) return raw.slice(braceStart, i + 1); }
+    }
+    return raw.slice(braceStart);
+  }
+  function parseFlexibleConfig(raw){
+    var objText = extractConfigObjectText(raw);
+    try{ return JSON.parse(objText); } catch(e1){}
+    try{ return (new Function('return (' + objText + ')'))(); } catch(e2){}
+    return null;
+  }
+
   function genHouseholdCode(){
     function seg(){ return Math.random().toString(36).slice(2,6).toUpperCase(); }
     return seg()+'-'+seg()+'-'+seg()+'-'+seg();
@@ -1130,7 +1149,7 @@
     +       '<li>Copie o objeto <b>firebaseConfig</b> mostrado e cole abaixo.</li>'
     +     '</ol>'
     +   '</div>'
-    +   '<div class="field"><label>Configuração do Firebase (cole o objeto inteiro)</label><textarea id="ob-config" rows="6" style="font-family:var(--font-mono);font-size:12px;" placeholder=\'{"apiKey":"...","authDomain":"...","projectId":"...","appId":"..."}\'></textarea></div>'
+    +   '<div class="field"><label>Configuração do Firebase (cole o trecho inteiro que o Firebase mostrou — pode incluir o import e os comentários, sem problema)</label><textarea id="ob-config" rows="8" style="font-family:var(--font-mono);font-size:12px;" placeholder=\'const firebaseConfig = {\n  apiKey: "...",\n  authDomain: "...",\n  projectId: "...",\n  appId: "..."\n};\'></textarea></div>'
     +   '<div class="field"><label>Código da casa</label><div class="code-row"><input type="text" id="ob-household" style="font-family:var(--font-mono);text-transform:uppercase;" placeholder="Ex.: AB12-CD34-EF56-GH78"><button class="btn" data-action="generate-code">Gerar</button></div>'
     +     '<p style="font-size:11px;color:var(--ink-faint);margin-top:6px;line-height:1.5;">No primeiro aparelho, clique em "Gerar" e depois use exatamente este mesmo código (e a mesma configuração) no aparelho da outra pessoa.</p></div>'
     +   '<button class="btn primary block" data-action="connect-cloud" style="margin-top:8px;" ' + (connecting?'disabled':'') + '>' + (connecting ? 'Conectando…' : 'Conectar') + '</button>'
@@ -1520,11 +1539,14 @@
       case 'connect-cloud':
         var cfgRaw = (document.getElementById('ob-config').value || '').trim();
         var hid = (document.getElementById('ob-household').value || '').trim().toUpperCase();
-        var cfgObj;
-        try{ cfgObj = JSON.parse(cfgRaw); }
-        catch(err){ state.cloud.error = 'Configuração inválida. Cole o objeto JSON inteiro copiado do Firebase (com chaves { }).'; render(); break; }
-        if (!cfgObj || !cfgObj.apiKey || !cfgObj.projectId){
-          state.cloud.error = 'Faltam campos na configuração. Cole o objeto completo (apiKey, projectId, appId...).';
+        var cfgObj = parseFlexibleConfig(cfgRaw);
+        if (!cfgObj){
+          state.cloud.error = 'Não consegui ler essa configuração. Cole o trecho que o Firebase mostrou (pode colar o bloco inteiro, com import e comentários — não precisa limpar nada).';
+          render();
+          break;
+        }
+        if (!cfgObj.apiKey || !cfgObj.projectId){
+          state.cloud.error = 'Faltam campos na configuração. Cole o trecho completo (com apiKey, projectId, appId...).';
           render();
           break;
         }
