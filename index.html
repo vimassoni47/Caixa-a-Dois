@@ -4,14 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Livro-Caixa a Dois</title>
-<meta name="color-scheme" content="light only">
+<meta name="color-scheme" content="light">
 <meta name="theme-color" content="#F4EFE4">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
-  :root{color-scheme:light;}
+  :root{color-scheme:light only;}
   html,body{margin:0;padding:0;background:#F4EFE4}
   body{-webkit-font-smoothing:antialiased;color:#2A241C;font-family:'Figtree',-apple-system,sans-serif;}
   button{font-family:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent;}
@@ -237,7 +237,7 @@
   .sheet.no-anim{animation:none;}
   @media (min-width:640px){ .sheet{border-radius:22px;margin:auto;} }
   .sheet-handle{width:38px;height:4px;border-radius:100px;background:#E4DACB;margin:14px auto 4px;flex:none;}
-  .sheet-body{overflow-y:auto;overflow-x:hidden;min-height:0;padding:8px 22px calc(22px + env(safe-area-inset-bottom));}
+  .sheet-body{overflow-y:auto;overflow-x:hidden;min-height:0;overscroll-behavior:contain;padding:8px 22px calc(22px + env(safe-area-inset-bottom));}
   .sheet-title{font-size:22px;font-weight:500;margin:0 0 18px;}
   .sheet-actions{display:flex;gap:10px;margin-top:6px;}
   .sheet-actions .btn{flex:1;}
@@ -659,6 +659,29 @@
     setTimeout(function(){ renderScheduled=false; doRender(); }, 0);
   }
 
+  var bodyLocked = false;
+  var savedScrollY = 0;
+  function syncBodyScrollLock(){
+    var shouldLock = !!(state.ui.modal || state.ui.confirm);
+    if (shouldLock && !bodyLocked){
+      savedScrollY = window.scrollY || window.pageYOffset || 0;
+      document.body.style.position = 'fixed';
+      document.body.style.top = '-' + savedScrollY + 'px';
+      document.body.style.left = '0';
+      document.body.style.right = '0';
+      document.body.style.width = '100%';
+      bodyLocked = true;
+    } else if (!shouldLock && bodyLocked){
+      document.body.style.position = '';
+      document.body.style.top = '';
+      document.body.style.left = '';
+      document.body.style.right = '';
+      document.body.style.width = '';
+      window.scrollTo(0, savedScrollY);
+      bodyLocked = false;
+    }
+  }
+
   function doRender(){
     var appEl = document.getElementById('app');
     if (!state.cloud.connected){
@@ -676,6 +699,7 @@
     html += renderToast();
     appEl.innerHTML = html;
     appEl.dataset.rendered = '1';
+    syncBodyScrollLock();
     if (state.ui.modal && !state.ui.modal.__noAnim && !state.isMobile){
       var moneyInput = document.getElementById('field-valor');
       if (moneyInput) moneyInput.focus();
