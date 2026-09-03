@@ -4,14 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Livro-Caixa a Dois</title>
+<meta name="color-scheme" content="light only">
+<meta name="theme-color" content="#F4EFE4">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  *{box-sizing:border-box}
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  :root{color-scheme:light;}
   html,body{margin:0;padding:0;background:#F4EFE4}
   body{-webkit-font-smoothing:antialiased;color:#2A241C;font-family:'Figtree',-apple-system,sans-serif;}
-  button{font-family:inherit;cursor:pointer}
+  button{font-family:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+  button:focus{outline:none;}
+  button:focus-visible{outline:2px solid #4F7A4A;outline-offset:2px;}
   input,select,textarea{font-family:inherit}
   a{color:#4F7A4A;text-decoration:none}
   a:hover{color:#3A5C37;text-decoration:underline}
@@ -228,6 +233,7 @@
   .overlay.no-anim{animation:none;}
   @media (min-width:640px){ .overlay{align-items:center;padding:20px;} }
   .sheet{width:100%;max-width:520px;max-height:90vh;background:#FFFDF8;border-radius:26px 26px 0 0;margin:auto auto 0;animation:lcUp .24s cubic-bezier(.2,.7,.3,1);overflow:hidden;display:flex;flex-direction:column;}
+  @supports (height: 100dvh){ .sheet{max-height:90dvh;} }
   .sheet.no-anim{animation:none;}
   @media (min-width:640px){ .sheet{border-radius:22px;margin:auto;} }
   .sheet-handle{width:38px;height:4px;border-radius:100px;background:#E4DACB;margin:14px auto 4px;flex:none;}
@@ -670,7 +676,7 @@
     html += renderToast();
     appEl.innerHTML = html;
     appEl.dataset.rendered = '1';
-    if (state.ui.modal && !state.ui.modal.__noAnim){
+    if (state.ui.modal && !state.ui.modal.__noAnim && !state.isMobile){
       var moneyInput = document.getElementById('field-valor');
       if (moneyInput) moneyInput.focus();
     }
