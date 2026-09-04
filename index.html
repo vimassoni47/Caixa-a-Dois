@@ -289,10 +289,12 @@
   var DESP = [
     {id:'moradia', label:'Moradia', color:'#7A5638'},
     {id:'alimentacao', label:'Alimentação', color:'#C99436'},
+    {id:'restaurantes', label:'Restaurantes', color:'#BC5350'},
     {id:'transporte', label:'Transporte', color:'#5E7C86'},
     {id:'saude', label:'Saúde', color:'#94492A'},
     {id:'educacao', label:'Educação', color:'#4F7A4A'},
     {id:'lazer', label:'Lazer', color:'#8E6188'},
+    {id:'viagem', label:'Viagem', color:'#3E7E7A'},
     {id:'assinaturas', label:'Assinaturas', color:'#6B6152'},
     {id:'cuidados', label:'Cuidados pessoais', color:'#8C5A47'},
     {id:'filhos_pets', label:'Filhos/Pets', color:'#6E8358'},
@@ -342,7 +344,7 @@
   var state = {
     loaded:false,
     isMobile: typeof window !== 'undefined' && window.innerWidth < 900,
-    settings:{ nome1:'Pessoa 1', nome2:'Pessoa 2', split1:50, split2:50 },
+    settings:{ nome1:'Pessoa 1', nome2:'Pessoa 2', split1:50, split2:50, limite1:0, limite2:0 },
     transactions:[], budgets:{}, goals:[], settlements:{},
     ui:{
       tab:'inicio', month: today.getMonth(), year: today.getFullYear(),
@@ -444,6 +446,8 @@
         state.settings.nome2 = data.nome2 || state.settings.nome2;
         state.settings.split1 = (typeof data.split1==='number') ? data.split1 : 50;
         state.settings.split2 = (typeof data.split2==='number') ? data.split2 : (100-state.settings.split1);
+        state.settings.limite1 = (typeof data.limite1==='number') ? data.limite1 : 0;
+        state.settings.limite2 = (typeof data.limite2==='number') ? data.limite2 : 0;
         state.budgets = data.budgets || {};
         gotHousehold = true; state.loaded = true;
         state.cloud.connecting=false; state.cloud.connected=true; state.cloud.error=null;
@@ -523,7 +527,7 @@
     }
     state.demo = true; state.cloud = {connected:true, connecting:false, error:null}; state.loaded = true;
     cloud.householdId = 'DEMONSTRAÇÃO';
-    state.settings = { nome1:A, nome2:B, split1:55, split2:45 };
+    state.settings = { nome1:A, nome2:B, split1:55, split2:45, limite1:2600, limite2:2100 };
     state.budgets = { moradia:2800, alimentacao:1100, transporte:400, lazer:350, assinaturas:120, cuidados:250 };
     state.goals = [
       { id:'g1', titulo:'Viagem ao Sul', alvo:9000, atual:5400, prazo:null, criadoEm:1 },
@@ -573,7 +577,7 @@
   }
   function saveHouseholdMeta(){
     if (isDemo()) return Promise.resolve();
-    return householdRef().set({ nome1:state.settings.nome1, nome2:state.settings.nome2, split1:state.settings.split1, split2:state.settings.split2, budgets:state.budgets }, {merge:true})
+    return householdRef().set({ nome1:state.settings.nome1, nome2:state.settings.nome2, split1:state.settings.split1, split2:state.settings.split2, limite1:state.settings.limite1, limite2:state.settings.limite2, budgets:state.budgets }, {merge:true})
       .catch(function(){ showToast('Não foi possível salvar. Verifique sua internet.'); });
   }
   function replaceAllTransactions(list){
@@ -1113,7 +1117,48 @@
     var mtx = monthTransactions(state.ui.year, state.ui.month);
     var porCat = {};
     mtx.filter(function(t){return t.tipo==='despesa';}).forEach(function(t){ porCat[t.categoria]=(porCat[t.categoria]||0)+(t.valor||0); });
-    var html = '<p style="font-size:13.5px;color:#6E6455;line-height:1.6;margin:0 0 18px;max-width:640px;">Defina um orçamento mensal por categoria e acompanhe quanto já foi gasto em '+MESES[state.ui.month]+'. Deixe em branco para não acompanhar a categoria.</p>';
+
+    var sum = splitSummary(mtx);
+    var lim1 = state.settings.limite1||0, lim2 = state.settings.limite2||0;
+    var livre1 = lim1 - sum.gastos1, livre2 = lim2 - sum.gastos2;
+    var livreJuntos = livre1 + livre2;
+
+    var html = '<div class="card" style="margin-bottom:20px;">'
+      + '<p class="disp card-title">Orçamento livre por pessoa</p>'
+      + '<p class="card-sub">Defina um teto de gastos totais pro mês e vejam quanto ainda dá pra gastar com o que quiserem — passeio, restaurante, o que for — depois de contar tudo (individual e a parte do compartilhado).</p>';
+
+    [1,2].forEach(function(p){
+      var nome = p===1?state.settings.nome1:state.settings.nome2;
+      var lim = p===1?lim1:lim2;
+      var gastos = p===1?sum.gastos1:sum.gastos2;
+      var livre = p===1?livre1:livre2;
+      var pessoaColor = p===1?PESSOA1_COLOR:PESSOA2_COLOR;
+      var pct = lim>0 ? Math.min(gastos/lim,1) : 0;
+      var over = lim>0 && gastos>lim;
+      html += '<div style="padding:14px 0;'+(p===2?'border-top:1px solid #F1EADC;':'')+'">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;flex-wrap:wrap;">'
+        +   '<span style="font-weight:600;font-size:14.5px;">'+escapeHtml(nome)+'</span>'
+        +   '<div class="money-field" style="width:150px;"><span class="mono">R$</span><input type="text" inputmode="decimal" class="mono" autocomplete="off" data-limite-pessoa="'+p+'" value="'+(lim>0?String(lim).replace('.',','):'')+'" placeholder="sem teto"></div>'
+        + '</div>'
+        + (lim>0 ? (
+          '<div class="track" style="height:8px;margin-bottom:9px;"><div class="track-fill" style="width:'+(pct*100).toFixed(1)+'%;background:'+(over?'#B5623C':pessoaColor)+';"></div></div>'
+          + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;color:#6E6455;flex-wrap:wrap;">'
+          +   '<span>Gastos até agora: <b class="mono" style="color:#2A241C;">'+fmtBRL(gastos)+'</b></span>'
+          +   '<span style="font-weight:600;color:'+(livre<0?'#94492A':'#3A5C37')+';">'+(livre<0?('excedeu em '+fmtBRL(-livre)):(fmtBRL(livre)+' livre'))+'</span>'
+          + '</div>'
+        ) : '<p style="font-size:12px;color:#9C9480;margin:0;">Defina um teto de gasto total para acompanhar quanto sobra.</p>')
+        + '</div>';
+    });
+
+    if (lim1>0 && lim2>0){
+      html += '<div style="margin-top:6px;padding-top:16px;border-top:1px solid #E4DACB;text-align:center;">'
+        + '<p style="font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#74695A;margin:0 0 6px;">Vocês dois juntos, livres pra gastar</p>'
+        + '<p class="disp mono" style="font-size:23px;font-weight:600;margin:0;color:'+(livreJuntos<0?'#94492A':'#3A5C37')+';">'+fmtBRL(livreJuntos)+'</p>'
+        + '</div>';
+    }
+    html += '</div>';
+
+    html += '<p style="font-size:13.5px;color:#6E6455;line-height:1.6;margin:0 0 18px;max-width:640px;">Defina um orçamento mensal por categoria e acompanhe quanto já foi gasto em '+MESES[state.ui.month]+'. Deixe em branco para não acompanhar a categoria.</p>';
     html += '<div class="grid-auto2">';
     DESP.forEach(function(c){
       var gasto = porCat[c.id]||0, orc = state.budgets[c.id]||0;
@@ -1123,7 +1168,7 @@
         + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;"><span style="display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;min-width:0;"><span style="width:10px;height:10px;border-radius:3px;flex:none;background:'+c.color+';"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+c.label+'</span></span><span class="mono" style="font-size:12.5px;color:#74695A;flex:none;">'+fmtBRL(gasto)+(orc>0?' de '+fmtBRL(orc):'')+'</span></div>'
         + '<div class="track" style="height:8px;margin-bottom:14px;"><div class="track-fill" style="width:'+(pct*100).toFixed(1)+'%;background:'+(over?'#B5623C':c.color)+';"></div></div>'
         + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
-        +   '<div style="display:flex;align-items:center;gap:7px;"><span style="font-size:11.5px;color:#74695A;">Orçamento</span><input type="text" inputmode="decimal" data-budget-cat="'+c.id+'" value="'+(orc>0?String(orc).replace('.',','):'')+'" placeholder="R$ 0,00" style="width:104px;border:1px solid #E4DACB;border-radius:10px;padding:7px 10px;font-size:16px;background:#FFFDF8;color:#2A241C;"></div>'
+        +   '<div style="display:flex;align-items:center;gap:7px;"><span style="font-size:11.5px;color:#74695A;">Orçamento</span><input type="text" inputmode="decimal" autocomplete="off" data-budget-cat="'+c.id+'" value="'+(orc>0?String(orc).replace('.',','):'')+'" placeholder="R$ 0,00" style="width:104px;border:1px solid #E4DACB;border-radius:10px;padding:7px 10px;font-size:16px;background:#FFFDF8;color:#2A241C;"></div>'
         +   '<span style="font-size:11.5px;font-weight:600;color:'+(over?'#94492A':'#4F7A4A')+'">'+(orc>0?(over?'excedeu em '+fmtBRL(gasto-orc):fmtBRL(orc-gasto)+' restante'):'')+'</span>'
         + '</div></div>';
     });
@@ -1430,6 +1475,13 @@
     render();
     saveHouseholdMeta();
   }
+  function updateLimitePessoa(pessoa, rawVal){
+    var v = parseMoney(rawVal);
+    var val = (!rawVal || isNaN(v) || v<=0) ? 0 : v;
+    if (pessoa === '1') state.settings.limite1 = val; else state.settings.limite2 = val;
+    render();
+    saveHouseholdMeta();
+  }
   function saveSettingsFromForm(){
     var nome1 = document.getElementById('set-nome-1').value.trim() || 'Pessoa 1';
     var nome2 = document.getElementById('set-nome-2').value.trim() || 'Pessoa 2';
@@ -1613,6 +1665,9 @@
     }
     if (e.target.matches('[data-budget-cat]')){
       updateBudget(e.target.getAttribute('data-budget-cat'), e.target.value);
+    }
+    if (e.target.matches('[data-limite-pessoa]')){
+      updateLimitePessoa(e.target.getAttribute('data-limite-pessoa'), e.target.value);
     }
   });
   document.addEventListener('keydown', function(e){
