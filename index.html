@@ -303,6 +303,7 @@
   ];
   var REC = [
     {id:'salario', label:'Salário líquido', color:'#4F7A4A'},
+    {id:'vr', label:'VR', color:'#5B8DB8'},
     {id:'extra', label:'Renda extra/freelance', color:'#C99436'},
     {id:'decimo', label:'13º/Bônus', color:'#5E7C86'},
     {id:'outros_r', label:'Outros rendimentos', color:'#7C7263'}
@@ -641,6 +642,35 @@
   function mesAnoKey(year, month){ return year+'-'+String(month+1).padStart(2,'0'); }
   function getSettlement(year, month){ return state.settlements[mesAnoKey(year,month)] || null; }
 
+  function vrSummary(){
+    var recebidoAteMes = 0, gastoAteMes = 0, recebidoMes = 0, gastoMes = 0;
+    var recebidoAntes = 0, gastoAntes = 0;
+    var y = state.ui.year, m = state.ui.month;
+    state.transactions.forEach(function(t){
+      var d = parseISODate(t.data);
+      var dy = d.getFullYear(), dm = d.getMonth();
+      var ateMes = (dy<y) || (dy===y && dm<=m);
+      var antesDoMes = (dy<y) || (dy===y && dm<m);
+      var mesmoMes = dy===y && dm===m;
+      if (t.tipo==='receita' && t.categoria==='vr'){
+        if (ateMes) recebidoAteMes += t.valor||0;
+        if (mesmoMes) recebidoMes += t.valor||0;
+        if (antesDoMes) recebidoAntes += t.valor||0;
+      } else if (t.tipo==='despesa' && t.metodoPagamento==='vr' && (t.categoria==='alimentacao'||t.categoria==='restaurantes')){
+        if (ateMes) gastoAteMes += t.valor||0;
+        if (mesmoMes) gastoMes += t.valor||0;
+        if (antesDoMes) gastoAntes += t.valor||0;
+      }
+    });
+    var prevDate = new Date(y, m-1, 1);
+    return {
+      saldo: recebidoAteMes-gastoAteMes,
+      recebidoMes: recebidoMes, gastoMes: gastoMes,
+      saldoAnterior: recebidoAntes-gastoAntes,
+      mesAnteriorLabel: MESES[prevDate.getMonth()]
+    };
+  }
+
   function showToast(msg){
     state.ui.toast = msg; renderToastOnly();
     if (toastTimer) clearTimeout(toastTimer);
@@ -817,9 +847,10 @@
     var c = catById(t.categoria, t.tipo);
     var isRec = t.tipo==='receita';
     var div = t.tipo==='despesa' ? (divisaoOf(t)==='compartilhado' ? ' · Compartilhado' : ' · Individual') : '';
+    var vrTag = (t.tipo==='despesa' && t.metodoPagamento==='vr') ? ' · VR' : '';
     return '<div class="tx-row">'
       + '<span class="tx-avatar mono" style="background:'+c.color+';color:'+readableInk(c.color)+'">'+initialsOf(c.label)+'</span>'
-      + '<span class="tx-mid"><span class="tx-desc">'+escapeHtml(t.descricao||c.label)+'</span><span class="tx-meta">'+escapeHtml(t.quem)+' · '+fmtDateShort(t.data)+div+'</span></span>'
+      + '<span class="tx-mid"><span class="tx-desc">'+escapeHtml(t.descricao||c.label)+'</span><span class="tx-meta">'+escapeHtml(t.quem)+' · '+fmtDateShort(t.data)+div+vrTag+'</span></span>'
       + '<span class="tx-amt mono" style="color:'+(isRec?'#3A5C37':'#94492A')+'">'+(isRec?'+ ':'− ')+fmtBRL(t.valor)+'</span>'
       + '<button class="edit-btn" data-action="edit-transaction" data-id="'+t.id+'" aria-label="Editar lançamento">'+ICONS.edit+'</button>'
       + '</div>';
@@ -1158,6 +1189,21 @@
     }
     html += '</div>';
 
+    var vr = vrSummary();
+    html += '<div class="card" style="margin-bottom:20px;">'
+      + '<p class="disp card-title">Saldo de VR</p>'
+      + '<p class="card-sub">Acumula de um mês para o outro — o que sobra continua disponível depois.</p>'
+      + '<div style="text-align:center;padding:6px 0 18px;">'
+      +   '<p style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#74695A;margin:0 0 8px;">Saldo acumulado até '+MESES[state.ui.month]+'</p>'
+      +   '<p class="disp mono" style="font-size:28px;font-weight:600;margin:0;color:'+(vr.saldo<0?'#94492A':'#33587A')+';">'+fmtBRL(vr.saldo)+'</p>'
+      + '</div>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px 16px;font-size:12px;color:#6E6455;border-top:1px solid #F1EADC;padding-top:14px;">'
+      +   '<span>Sobrou de '+vr.mesAnteriorLabel+': <b class="mono" style="color:#2A241C;display:block;">'+fmtBRL(vr.saldoAnterior)+'</b></span>'
+      +   '<span>Recebido em '+MESES[state.ui.month]+': <b class="mono" style="color:#2A241C;display:block;">'+fmtBRL(vr.recebidoMes)+'</b></span>'
+      +   '<span>Gasto em '+MESES[state.ui.month]+': <b class="mono" style="color:#2A241C;display:block;">'+fmtBRL(vr.gastoMes)+'</b></span>'
+      + '</div>'
+      + '</div>';
+
     html += '<p style="font-size:13.5px;color:#6E6455;line-height:1.6;margin:0 0 18px;max-width:640px;">Defina um orçamento mensal por categoria e acompanhe quanto já foi gasto em '+MESES[state.ui.month]+'. Deixe em branco para não acompanhar a categoria.</p>';
     html += '<div class="grid-auto2">';
     DESP.forEach(function(c){
@@ -1257,6 +1303,8 @@
     var valor = m.valor != null ? m.valor : (tx ? tx.valor : '');
     var desc = m.descricao != null ? m.descricao : (tx ? tx.descricao : '');
     var divisao = m.divisao || (tx && tx.divisao) || 'individual';
+    var isFoodCat = (catVal==='alimentacao' || catVal==='restaurantes');
+    var metodo = m.metodo || (tx && tx.metodoPagamento) || 'normal';
 
     return modalOpenTag(m)
       + '<p class="disp sheet-title">'+(editing?'Editar lançamento':'Novo lançamento')+'</p>'
@@ -1272,7 +1320,14 @@
         + '<p style="font-size:11.5px;color:#74695A;margin:0 0 16px;line-height:1.5;">Compartilhado entra na divisão '+state.settings.split1+'%/'+state.settings.split2+'%. Individual fica só com quem lançou.</p>'
       ) : '')
       + '<div class="field"><label>Valor</label><div class="money-field"><span class="mono">R$</span><input type="text" inputmode="decimal" id="field-valor" class="mono" autocomplete="off" placeholder="0,00" value="'+(valor!==''?String(valor).replace('.',','):'')+'"></div><div class="field-err" id="err-valor" style="display:none;">Informe um valor maior que zero.</div></div>'
-      + '<div class="field"><label>Categoria</label><select id="field-categoria">'+cats.map(function(c){return '<option value="'+c.id+'" '+(c.id===catVal?'selected':'')+'>'+c.label+'</option>';}).join('')+'</select></div>'
+      + '<div class="field" style="margin-bottom:'+(tipo==='despesa'&&isFoodCat?'8px':'16px')+';"><label>Categoria</label><select id="field-categoria">'+cats.map(function(c){return '<option value="'+c.id+'" '+(c.id===catVal?'selected':'')+'>'+c.label+'</option>';}).join('')+'</select></div>'
+      + (tipo==='despesa' && isFoodCat ? (
+        '<div class="seg" style="margin-bottom:8px;">'
+        +   '<button style="background:'+(metodo==='normal'?'#FFFDF8':'transparent')+';color:'+(metodo==='normal'?'#2A241C':'#6E6455')+';" data-action="modal-set-metodo" data-metodo="normal">Normal</button>'
+        +   '<button style="background:'+(metodo==='vr'?'#DCE6F0':'transparent')+';color:'+(metodo==='vr'?'#33587A':'#6E6455')+';" data-action="modal-set-metodo" data-metodo="vr">VR</button>'
+        + '</div>'
+        + '<p style="font-size:11.5px;color:#74695A;margin:0 0 16px;line-height:1.5;">Como esse gasto foi pago — ajuda a acompanhar o saldo do VR na aba Categorias.</p>'
+      ) : '')
       + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px;">'
       +   '<div class="field" style="margin-bottom:0;"><label>Data</label><input type="date" id="field-data" value="'+data+'"></div>'
       +   '<div class="field" style="margin-bottom:0;"><label>Quem lançou</label><select id="field-quem"><option value="'+escapeHtml(state.settings.nome1)+'" '+(quem===state.settings.nome1?'selected':'')+'>'+escapeHtml(state.settings.nome1)+'</option><option value="'+escapeHtml(state.settings.nome2)+'" '+(quem===state.settings.nome2?'selected':'')+'>'+escapeHtml(state.settings.nome2)+'</option></select></div>'
@@ -1395,11 +1450,13 @@
     var quem = document.getElementById('field-quem').value;
     var descricao = document.getElementById('field-descricao').value.trim();
     var divisao = tipo==='despesa' ? (m.divisao || existing.divisao || 'individual') : null;
+    var isFoodCat = (categoria==='alimentacao' || categoria==='restaurantes');
+    var metodoPagamento = (tipo==='despesa' && isFoodCat) ? (m.metodo || existing.metodoPagamento || 'normal') : null;
     var tx;
     if (editingId){
-      tx = Object.assign({}, existing, { id:editingId, tipo:tipo, valor:valor, categoria:categoria, data:data, quem:quem, descricao:descricao, divisao:divisao });
+      tx = Object.assign({}, existing, { id:editingId, tipo:tipo, valor:valor, categoria:categoria, data:data, quem:quem, descricao:descricao, divisao:divisao, metodoPagamento:metodoPagamento });
     } else {
-      tx = { id:genId(), tipo:tipo, valor:valor, categoria:categoria, data:data, quem:quem, descricao:descricao, divisao:divisao, criadoEm:Date.now() };
+      tx = { id:genId(), tipo:tipo, valor:valor, categoria:categoria, data:data, quem:quem, descricao:descricao, divisao:divisao, metodoPagamento:metodoPagamento, criadoEm:Date.now() };
     }
     state.ui.modal = null;
     showToast(editingId ? 'Lançamento atualizado' : 'Lançamento adicionado');
@@ -1611,6 +1668,16 @@
         state.ui.modal.__noAnim = true;
         render();
         break;
+      case 'modal-set-metodo':
+        state.ui.modal.metodo = btn.getAttribute('data-metodo');
+        state.ui.modal.valor = document.getElementById('field-valor') ? document.getElementById('field-valor').value : state.ui.modal.valor;
+        state.ui.modal.categoria = document.getElementById('field-categoria') ? document.getElementById('field-categoria').value : state.ui.modal.categoria;
+        state.ui.modal.data = document.getElementById('field-data') ? document.getElementById('field-data').value : state.ui.modal.data;
+        state.ui.modal.quem = document.getElementById('field-quem') ? document.getElementById('field-quem').value : state.ui.modal.quem;
+        state.ui.modal.descricao = document.getElementById('field-descricao') ? document.getElementById('field-descricao').value : state.ui.modal.descricao;
+        state.ui.modal.__noAnim = true;
+        render();
+        break;
       case 'save-transaction': saveTransactionFromModal(btn.getAttribute('data-editing')||null); break;
       case 'close-modal': closeModal(); break;
       case 'open-add-goal': openAddGoal(); break;
@@ -1668,6 +1735,15 @@
     }
     if (e.target.matches('[data-limite-pessoa]')){
       updateLimitePessoa(e.target.getAttribute('data-limite-pessoa'), e.target.value);
+    }
+    if (e.target.id === 'field-categoria' && state.ui.modal && state.ui.modal.type === 'transaction'){
+      state.ui.modal.categoria = e.target.value;
+      state.ui.modal.valor = document.getElementById('field-valor') ? document.getElementById('field-valor').value : state.ui.modal.valor;
+      state.ui.modal.data = document.getElementById('field-data') ? document.getElementById('field-data').value : state.ui.modal.data;
+      state.ui.modal.quem = document.getElementById('field-quem') ? document.getElementById('field-quem').value : state.ui.modal.quem;
+      state.ui.modal.descricao = document.getElementById('field-descricao') ? document.getElementById('field-descricao').value : state.ui.modal.descricao;
+      state.ui.modal.__noAnim = true;
+      render();
     }
   });
   document.addEventListener('keydown', function(e){
