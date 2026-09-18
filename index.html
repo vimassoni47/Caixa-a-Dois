@@ -346,11 +346,11 @@
     loaded:false,
     isMobile: typeof window !== 'undefined' && window.innerWidth < 900,
     settings:{ nome1:'Pessoa 1', nome2:'Pessoa 2', split1:50, split2:50, limite1:0, limite2:0 },
-    transactions:[], budgets:{}, goals:[], settlements:{},
+    transactions:[], budgets:{}, goals:[], settlements:{}, recorrentes:[],
     ui:{
       tab:'inicio', month: today.getMonth(), year: today.getFullYear(),
       modal:null, confirm:null, toast:null,
-      filters:{ tipo:'todos', quem:'todos', categoria:'todos' },
+      filters:{ tipo:'todos', quem:'todos', categoria:'todos', divisao:'todos' },
       pessoaSel: 1
     },
     cloud:{ connected:false, connecting:false, error:null },
@@ -382,6 +382,20 @@
   }
   function parseISODate(iso){ var p=String(iso||'').split('-'); return new Date(parseInt(p[0],10),parseInt(p[1],10)-1,parseInt(p[2],10)); }
   function fmtDateShort(iso){ var d=parseISODate(iso); if(isNaN(d.getTime())) return String(iso||''); return d.getDate()+' de '+MESES[d.getMonth()]; }
+  function addMonthsClamped(isoDate, n){
+    var d = parseISODate(isoDate);
+    var y = d.getFullYear(), mRaw = d.getMonth()+n, day = d.getDate();
+    var ny = y + Math.floor(mRaw/12);
+    var nm = ((mRaw%12)+12)%12;
+    var lastDay = new Date(ny, nm+1, 0).getDate();
+    var clampedDay = Math.min(day, lastDay);
+    return ny+'-'+String(nm+1).padStart(2,'0')+'-'+String(clampedDay).padStart(2,'0');
+  }
+  function dateForDayInMonth(year, monthIdx, day){
+    var lastDay = new Date(year, monthIdx+1, 0).getDate();
+    var clampedDay = Math.min(Math.max(day,1), lastDay);
+    return year+'-'+String(monthIdx+1).padStart(2,'0')+'-'+String(clampedDay).padStart(2,'0');
+  }
 
   /* ================= CLOUD ================= */
   function getLocalCloudSetup(){
@@ -469,6 +483,13 @@
       cloud.unsubs.push(hhRef.collection('settlements').onSnapshot(function(snap){
         var map={}; snap.forEach(function(d){ map[d.id]=Object.assign({id:d.id}, d.data()); });
         state.settlements = map; if (state.cloud.connected) render();
+      }, function(err){ handleCloudError(err); }));
+
+      cloud.unsubs.push(hhRef.collection('recorrentes').onSnapshot(function(snap){
+        var list=[]; snap.forEach(function(d){ list.push(Object.assign({id:d.id}, d.data())); });
+        state.recorrentes = list;
+        processarRecorrentes();
+        if (state.cloud.connected) render();
       }, function(err){ handleCloudError(err); }));
 
       setTimeout(function(){
@@ -576,6 +597,14 @@
     if (isDemo()) return localRemoveMap('settlements', mesAno).then(render);
     return householdRef().collection('settlements').doc(mesAno).delete().catch(function(){ showToast('Não foi possível remover o acerto.'); });
   }
+  function upsertRecorrenteDoc(r){
+    if (isDemo()) return localUpsert('recorrentes', r).then(render);
+    return householdRef().collection('recorrentes').doc(r.id).set(r).catch(function(){ showToast('Não foi possível salvar a despesa recorrente.'); });
+  }
+  function deleteRecorrenteDoc(id){
+    if (isDemo()) return localRemove('recorrentes', id).then(render);
+    return householdRef().collection('recorrentes').doc(id).delete().catch(function(){ showToast('Não foi possível excluir a despesa recorrente.'); });
+  }
   function saveHouseholdMeta(){
     if (isDemo()) return Promise.resolve();
     return householdRef().set({ nome1:state.settings.nome1, nome2:state.settings.nome2, split1:state.settings.split1, split2:state.settings.split2, limite1:state.settings.limite1, limite2:state.settings.limite2, budgets:state.budgets }, {merge:true})
@@ -598,6 +627,12 @@
     var batch = cloud.db.batch();
     list.forEach(function(s){ batch.set(householdRef().collection('settlements').doc(s.mesAno), s); });
     return batch.commit().catch(function(){ showToast('Não foi possível importar os acertos.'); });
+  }
+  function replaceAllRecorrentes(list){
+    if (isDemo()){ state.recorrentes = list; return Promise.resolve(); }
+    var batch = cloud.db.batch();
+    list.forEach(function(r){ batch.set(householdRef().collection('recorrentes').doc(r.id), r); });
+    return batch.commit().catch(function(){ showToast('Não foi possível importar as despesas recorrentes.'); });
   }
   function deleteAllInCollection(name){
     if (isDemo()) return Promise.resolve();
@@ -641,6 +676,42 @@
   }
   function mesAnoKey(year, month){ return year+'-'+String(month+1).padStart(2,'0'); }
   function getSettlement(year, month){ return state.settlements[mesAnoKey(year,month)] || null; }
+
+  var processandoRecorrentes = false;
+  function processarRecorrentes(){
+    if (processandoRecorrentes) return;
+    if (!state.recorrentes || !state.recorrentes.length) return;
+    processandoRecorrentes = true;
+    var hoje = new Date();
+    var limiteY = hoje.getFullYear(), limiteM = hoje.getMonth();
+    var writes = [];
+    state.recorrentes.forEach(function(r){
+      if (!r.ativo) return;
+      var startY, startM;
+      if (r.ultimoGerado){
+        var parts = r.ultimoGerado.split('-');
+        startY = parseInt(parts[0],10); startM = parseInt(parts[1],10);
+        if (startM>11){ startM=0; startY++; }
+      } else {
+        var criado = new Date(r.criadoEm || Date.now());
+        startY = criado.getFullYear(); startM = criado.getMonth();
+      }
+      var y = startY, m = startM, novoUltimo = r.ultimoGerado, count = 0;
+      while ((y<limiteY || (y===limiteY && m<=limiteM)) && count < 60){
+        var dataISO = dateForDayInMonth(y, m, r.dia);
+        var tx = { id:genId(), tipo:'despesa', valor:r.valor, categoria:r.categoria, data:dataISO, quem:r.quem, descricao:r.descricao, divisao:r.divisao, metodoPagamento:null, recorrenteId:r.id, criadoEm:Date.now()+count };
+        writes.push(upsertTransactionDoc(tx));
+        novoUltimo = mesAnoKey(y, m);
+        count++;
+        m++; if (m>11){ m=0; y++; }
+      }
+      if (novoUltimo !== r.ultimoGerado){
+        writes.push(upsertRecorrenteDoc(Object.assign({}, r, { ultimoGerado: novoUltimo })));
+      }
+    });
+    Promise.all(writes).then(function(){ processandoRecorrentes = false; }).catch(function(){ processandoRecorrentes = false; });
+    if (!writes.length) processandoRecorrentes = false;
+  }
 
   function vrSummary(){
     var recebidoAteMes = 0, gastoAteMes = 0, recebidoMes = 0, gastoMes = 0;
@@ -848,9 +919,11 @@
     var isRec = t.tipo==='receita';
     var div = t.tipo==='despesa' ? (divisaoOf(t)==='compartilhado' ? ' · Compartilhado' : ' · Individual') : '';
     var vrTag = (t.tipo==='despesa' && t.metodoPagamento==='vr') ? ' · VR' : '';
+    var parcelaTag = t.parcelaInfo ? (' · '+t.parcelaInfo.atual+'/'+t.parcelaInfo.total) : '';
+    var recorrenteTag = t.recorrenteId ? ' · Recorrente' : '';
     return '<div class="tx-row">'
       + '<span class="tx-avatar mono" style="background:'+c.color+';color:'+readableInk(c.color)+'">'+initialsOf(c.label)+'</span>'
-      + '<span class="tx-mid"><span class="tx-desc">'+escapeHtml(t.descricao||c.label)+'</span><span class="tx-meta">'+escapeHtml(t.quem)+' · '+fmtDateShort(t.data)+div+vrTag+'</span></span>'
+      + '<span class="tx-mid"><span class="tx-desc">'+escapeHtml(t.descricao||c.label)+'</span><span class="tx-meta">'+escapeHtml(t.quem)+' · '+fmtDateShort(t.data)+div+vrTag+parcelaTag+recorrenteTag+'</span></span>'
       + '<span class="tx-amt mono" style="color:'+(isRec?'#3A5C37':'#94492A')+'">'+(isRec?'+ ':'− ')+fmtBRL(t.valor)+'</span>'
       + '<button class="edit-btn" data-action="edit-transaction" data-id="'+t.id+'" aria-label="Editar lançamento">'+ICONS.edit+'</button>'
       + '</div>';
@@ -1030,6 +1103,7 @@
     if (f.tipo!=='todos') list = list.filter(function(t){return t.tipo===f.tipo;});
     if (f.quem!=='todos') list = list.filter(function(t){return t.quem===f.quem;});
     if (f.categoria!=='todos') list = list.filter(function(t){return t.categoria===f.categoria;});
+    if (f.divisao!=='todos') list = list.filter(function(t){return t.tipo==='despesa' && divisaoOf(t)===f.divisao;});
     list = list.slice().sort(function(a,b){ return String(b.data).localeCompare(String(a.data)) || (b.criadoEm||0)-(a.criadoEm||0); });
 
     var allCatOptions = DESP.concat(REC), seen={};
@@ -1038,6 +1112,7 @@
 
     var html = '<div class="filter-row">'
       + '<select data-filter="tipo"><option value="todos">Todos os tipos</option><option value="despesa" '+(f.tipo==='despesa'?'selected':'')+'>Despesas</option><option value="receita" '+(f.tipo==='receita'?'selected':'')+'>Receitas</option></select>'
+      + '<select data-filter="divisao"><option value="todos">Todas as divisões</option><option value="compartilhado" '+(f.divisao==='compartilhado'?'selected':'')+'>Compartilhado</option><option value="individual" '+(f.divisao==='individual'?'selected':'')+'>Individual</option></select>'
       + '<select data-filter="quem"><option value="todos">Nós dois</option><option value="'+escapeHtml(state.settings.nome1)+'" '+(f.quem===state.settings.nome1?'selected':'')+'>'+escapeHtml(state.settings.nome1)+'</option><option value="'+escapeHtml(state.settings.nome2)+'" '+(f.quem===state.settings.nome2?'selected':'')+'>'+escapeHtml(state.settings.nome2)+'</option></select>'
       + '<select data-filter="categoria"><option value="todos">Todas as categorias</option>'+catOptionsHtml+'</select>'
       + '</div>';
@@ -1049,10 +1124,11 @@
     var groups={}, order=[];
     list.forEach(function(t){ if(!groups[t.data]){groups[t.data]=[]; order.push(t.data);} groups[t.data].push(t); });
     var total = list.reduce(function(s,t){return s+(t.tipo==='receita'?t.valor:-t.valor);},0);
+    var totalAbs = list.reduce(function(s,t){return s+(t.valor||0);},0);
     order.forEach(function(k){
       html += '<div style="margin-bottom:22px;"><p class="day-label">'+fmtDateShort(k)+'</p>' + groups[k].map(txRowHtml).join('') + '</div>';
     });
-    html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #E4DACB;padding:16px 4px 0;font-size:13px;color:#6E6455;"><span>Total do período filtrado</span><b class="mono" style="font-size:15px;color:#2A241C;">'+fmtBRL(total)+'</b></div>';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #E4DACB;padding:16px 4px 0;font-size:13px;color:#6E6455;"><span>'+(f.divisao!=='todos'?'Total '+(f.divisao==='compartilhado'?'compartilhado':'individual')+' do período filtrado':'Total do período filtrado')+'</span><b class="mono" style="font-size:15px;color:#2A241C;">'+(f.divisao!=='todos'?fmtBRL(totalAbs):fmtBRL(total))+'</b></div>';
     return html;
   }
 
@@ -1099,6 +1175,37 @@
       + '<div class="stat-mini"><p class="lbl">Sobra</p><p class="mono" style="color:'+((sel===1?sum.sobra1:sum.sobra2)<0?'#94492A':'#2A241C')+'">'+fmtBRL(sel===1?sum.sobra1:sum.sobra2)+'</p></div>'
       + '<div class="stat-mini"><p class="lbl">Individual</p><p class="mono">'+fmtBRL(sel===1?sum.ind1:sum.ind2)+'</p></div>'
       + '</div>';
+    html += '</div>';
+
+    var compartilhadas = despesasCompartilhadas(mtx).slice().sort(function(a,b){ return String(b.data).localeCompare(String(a.data)) || (b.criadoEm||0)-(a.criadoEm||0); });
+    var comp1 = compartilhadas.filter(function(t){return t.quem===state.settings.nome1;});
+    var comp2 = compartilhadas.filter(function(t){return t.quem===state.settings.nome2;});
+    html += '<div class="card" style="margin-top:16px;">'
+      + '<p class="disp card-title">Despesas compartilhadas do mês</p>'
+      + '<p class="card-sub">A base do acerto de contas acima — quem lançou o quê.</p>'
+      + '<div style="margin-bottom:22px;">'
+      +   '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;"><span style="font-weight:600;font-size:14px;">'+escapeHtml(state.settings.nome1)+'</span><span class="mono" style="font-weight:600;color:'+PESSOA1_COLOR+';">'+fmtBRL(sum.pago1)+'</span></div>'
+      +   (comp1.length ? comp1.map(txRowHtml).join('') : '<p style="font-size:12.5px;color:#9C9480;margin:0;">Nenhuma despesa compartilhada lançada por '+escapeHtml(state.settings.nome1)+' este mês.</p>')
+      + '</div>'
+      + '<div>'
+      +   '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;"><span style="font-weight:600;font-size:14px;">'+escapeHtml(state.settings.nome2)+'</span><span class="mono" style="font-weight:600;color:'+PESSOA2_COLOR+';">'+fmtBRL(sum.pago2)+'</span></div>'
+      +   (comp2.length ? comp2.map(txRowHtml).join('') : '<p style="font-size:12.5px;color:#9C9480;margin:0;">Nenhuma despesa compartilhada lançada por '+escapeHtml(state.settings.nome2)+' este mês.</p>')
+      + '</div>'
+      + '</div>';
+
+    var porCatComp = {};
+    compartilhadas.forEach(function(t){ porCatComp[t.categoria]=(porCatComp[t.categoria]||0)+(t.valor||0); });
+    var compIds = Object.keys(porCatComp).sort(function(a,b){return porCatComp[b]-porCatComp[a];});
+    var maxComp = compIds.length ? porCatComp[compIds[0]] : 1;
+    html += '<div class="card" style="margin-top:16px;"><p class="disp card-title">Compartilhado por categoria</p><p class="card-sub">'+(compIds.length?compIds.length+' categorias com movimento neste mês':'Nada lançado ainda')+'</p>';
+    if (compIds.length){
+      html += compIds.map(function(id){
+        var c = catById(id,'despesa');
+        return '<div class="barrow"><div class="barrow-head"><span class="lb">'+c.label+'</span><span class="mono vv">'+fmtBRL(porCatComp[id])+'</span></div><div class="track"><div class="track-fill" style="width:'+((porCatComp[id]/maxComp)*100).toFixed(1)+'%;background:'+c.color+';"></div></div></div>';
+      }).join('');
+    } else {
+      html += '<div class="empty-box"><div class="empty-dot"></div><p>Nenhuma despesa compartilhada lançada neste mês.</p></div>';
+    }
     html += '</div>';
 
     var pPago = sel===1?sum.pago1:sum.pago2, pJusto = sel===1?sum.justo1:sum.justo2;
@@ -1219,6 +1326,26 @@
         + '</div></div>';
     });
     html += '</div>';
+
+    var recs = state.recorrentes.slice().sort(function(a,b){return (a.criadoEm||0)-(b.criadoEm||0);});
+    html += '<div style="margin-top:26px;">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;"><p class="disp" style="font-size:17px;font-weight:500;margin:0;">Despesas recorrentes</p><button class="btn small" data-action="open-add-recorrente">Nova</button></div>'
+      + '<p style="font-size:12.5px;color:#6E6455;margin:0 0 14px;line-height:1.5;">Entram sozinhas todo mês, no dia escolhido — aluguel, assinaturas, o que for fixo.</p>';
+    if (recs.length===0){
+      html += '<div class="empty-dash"><div class="empty-dot" style="margin:0 auto 12px;"></div><p class="disp">Nenhuma cadastrada</p><p class="small">Cadastre uma vez e ela mesma entra todo mês, sem precisar lançar de novo.</p></div>';
+    } else {
+      html += recs.map(function(r){
+        var c = catById(r.categoria, 'despesa');
+        return '<div class="tx-row" style="'+(r.ativo===false?'opacity:.5;':'')+'">'
+          + '<span class="tx-avatar mono" style="background:'+c.color+';color:'+readableInk(c.color)+'">'+initialsOf(c.label)+'</span>'
+          + '<span class="tx-mid"><span class="tx-desc">'+escapeHtml(r.descricao||c.label)+'</span><span class="tx-meta">'+escapeHtml(r.quem)+' · dia '+r.dia+' · '+(r.divisao==='compartilhado'?'Compartilhado':'Individual')+(r.ativo===false?' · Pausada':'')+'</span></span>'
+          + '<span class="tx-amt mono" style="color:#94492A;">'+fmtBRL(r.valor)+'</span>'
+          + '<button class="edit-btn" data-action="edit-recorrente" data-id="'+r.id+'" aria-label="Editar despesa recorrente">'+ICONS.edit+'</button>'
+          + '</div>';
+      }).join('');
+    }
+    html += '</div>';
+
     return html;
   }
 
@@ -1283,6 +1410,7 @@
     if (m.type==='goal') return renderGoalModal(m);
     if (m.type==='aporte') return renderAporteModal(m);
     if (m.type==='settlement') return renderSettlementModal(m);
+    if (m.type==='recorrente') return renderRecorrenteModal(m);
     return '';
   }
 
@@ -1305,6 +1433,7 @@
     var divisao = m.divisao || (tx && tx.divisao) || 'individual';
     var isFoodCat = (catVal==='alimentacao' || catVal==='restaurantes');
     var metodo = m.metodo || (tx && tx.metodoPagamento) || 'normal';
+    var parcelas = m.parcelas != null ? m.parcelas : '';
 
     return modalOpenTag(m)
       + '<p class="disp sheet-title">'+(editing?'Editar lançamento':'Novo lançamento')+'</p>'
@@ -1319,7 +1448,21 @@
         + '</div>'
         + '<p style="font-size:11.5px;color:#74695A;margin:0 0 16px;line-height:1.5;">Compartilhado entra na divisão '+state.settings.split1+'%/'+state.settings.split2+'%. Individual fica só com quem lançou.</p>'
       ) : '')
-      + '<div class="field"><label>Valor</label><div class="money-field"><span class="mono">R$</span><input type="text" inputmode="decimal" id="field-valor" class="mono" autocomplete="off" placeholder="0,00" value="'+(valor!==''?String(valor).replace('.',','):'')+'"></div><div class="field-err" id="err-valor" style="display:none;">Informe um valor maior que zero.</div></div>'
+      + (!editing && tipo==='despesa' ? (
+        '<div style="display:flex;gap:10px;align-items:flex-start;">'
+        +   '<div class="field" style="flex:0 1 60%;min-width:0;margin-bottom:0;">'
+        +     '<label>Valor</label><div class="money-field"><span class="mono">R$</span><input type="text" inputmode="decimal" id="field-valor" class="mono" autocomplete="off" placeholder="0,00" value="'+(valor!==''?String(valor).replace('.',','):'')+'"></div>'
+        +     '<div class="field-err" id="err-valor" style="display:none;">Valor inválido.</div>'
+        +   '</div>'
+        +   '<div class="field" style="flex:1;min-width:0;margin-bottom:0;">'
+        +     '<label>Parcelas</label><div class="money-field"><span class="mono">×</span><input type="text" inputmode="numeric" autocomplete="off" id="field-parcelas" class="mono" placeholder="1" value="'+escapeHtml(String(parcelas))+'"></div>'
+        +   '</div>'
+        + '</div>'
+        + '<p style="font-size:11.5px;color:#74695A;margin:8px 0 16px;line-height:1.5;">Ex.: 10 parcelas de '+(valor!==''?fmtBRL(parseMoney(String(valor).replace(',','.'))||0):'R$ 0,00')+' lançam esse valor neste mês e nos próximos 9, automaticamente.</p>'
+      ) : (
+        '<div class="field"><label>Valor</label><div class="money-field"><span class="mono">R$</span><input type="text" inputmode="decimal" id="field-valor" class="mono" autocomplete="off" placeholder="0,00" value="'+(valor!==''?String(valor).replace('.',','):'')+'"></div><div class="field-err" id="err-valor" style="display:none;">Informe um valor maior que zero.</div></div>'
+        + (tx && tx.parcelaInfo ? '<p style="font-size:12px;color:#33587A;background:#EAF1F7;border-radius:10px;padding:9px 12px;margin:-6px 0 16px;">Parcela '+tx.parcelaInfo.atual+' de '+tx.parcelaInfo.total+' — editar aqui muda só esta parcela.</p>' : '')
+      ))
       + '<div class="field" style="margin-bottom:'+(tipo==='despesa'&&isFoodCat?'8px':'16px')+';"><label>Categoria</label><select id="field-categoria">'+cats.map(function(c){return '<option value="'+c.id+'" '+(c.id===catVal?'selected':'')+'>'+c.label+'</option>';}).join('')+'</select></div>'
       + (tipo==='despesa' && isFoodCat ? (
         '<div class="seg" style="margin-bottom:8px;">'
@@ -1399,6 +1542,44 @@
       + modalCloseTag();
   }
 
+  function renderRecorrenteModal(m){
+    var editing = !!m.editingId;
+    var r = editing ? state.recorrentes.find(function(x){return x.id===m.editingId;}) : null;
+    var categoria = m.categoria || (r && r.categoria) || DESP[0].id;
+    var valor = m.valor != null ? m.valor : (r ? r.valor : '');
+    var dia = m.dia != null ? m.dia : (r ? r.dia : '');
+    var divisao = m.divisao || (r && r.divisao) || 'individual';
+    var quem = m.quem || (r && r.quem) || state.settings.nome1;
+    var desc = m.descricao != null ? m.descricao : (r ? r.descricao : '');
+    var ativo = m.ativo != null ? m.ativo : (r ? r.ativo!==false : true);
+
+    return modalOpenTag(m)
+      + '<p class="disp sheet-title">'+(editing?'Editar despesa recorrente':'Nova despesa recorrente')+'</p>'
+      + (editing ? (
+        '<div class="seg" style="margin-bottom:16px;">'
+        +   '<button style="background:'+(ativo?'#DCE4CF':'transparent')+';color:'+(ativo?'#3A5C37':'#6E6455')+';" data-action="modal-set-rec-ativo" data-ativo="1">Ativa</button>'
+        +   '<button style="background:'+(!ativo?'#F4EFE4':'transparent')+';color:'+(!ativo?'#4A4234':'#6E6455')+';" data-action="modal-set-rec-ativo" data-ativo="0">Pausada</button>'
+        + '</div>'
+      ) : '')
+      + '<div class="seg" style="margin-bottom:8px;">'
+      +   '<button style="background:'+(divisao==='individual'?'#FFFDF8':'transparent')+';color:'+(divisao==='individual'?'#2A241C':'#6E6455')+';" data-action="modal-set-rec-divisao" data-divisao="individual">Individual</button>'
+      +   '<button style="background:'+(divisao==='compartilhado'?'#F6E9CE':'transparent')+';color:'+(divisao==='compartilhado'?'#8A6A22':'#6E6455')+';" data-action="modal-set-rec-divisao" data-divisao="compartilhado">Compartilhado</button>'
+      + '</div>'
+      + '<p style="font-size:11.5px;color:#74695A;margin:0 0 16px;line-height:1.5;">Compartilhado entra na divisão '+state.settings.split1+'%/'+state.settings.split2+'%. Individual fica só com quem lançou.</p>'
+      + '<div class="field"><label>Valor mensal</label><div class="money-field"><span class="mono">R$</span><input type="text" inputmode="decimal" id="field-rec-valor" class="mono" autocomplete="off" placeholder="0,00" value="'+(valor!==''?String(valor).replace('.',','):'')+'"></div><div class="field-err" id="err-rec-valor" style="display:none;">Informe um valor maior que zero.</div></div>'
+      + '<div class="field"><label>Categoria</label><select id="field-rec-categoria">'+DESP.map(function(c){return '<option value="'+c.id+'" '+(c.id===categoria?'selected':'')+'>'+c.label+'</option>';}).join('')+'</select></div>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px;">'
+      +   '<div class="field" style="margin-bottom:0;"><label>Dia do mês</label><input type="text" inputmode="numeric" autocomplete="off" id="field-rec-dia" placeholder="Ex.: 10" value="'+escapeHtml(String(dia))+'"><div class="field-err" id="err-rec-dia" style="display:none;">Informe um dia entre 1 e 31.</div></div>'
+      +   '<div class="field" style="margin-bottom:0;"><label>Quem paga</label><select id="field-rec-quem"><option value="'+escapeHtml(state.settings.nome1)+'" '+(quem===state.settings.nome1?'selected':'')+'>'+escapeHtml(state.settings.nome1)+'</option><option value="'+escapeHtml(state.settings.nome2)+'" '+(quem===state.settings.nome2?'selected':'')+'>'+escapeHtml(state.settings.nome2)+'</option></select></div>'
+      + '</div>'
+      + '<div class="field" style="margin-bottom:20px;"><label>Descrição</label><input type="text" id="field-rec-descricao" placeholder="Ex.: Aluguel, Netflix, academia…" value="'+escapeHtml(desc)+'"></div>'
+      + '<p style="font-size:11.5px;color:#74695A;margin:-8px 0 20px;line-height:1.5;">Entra sozinha todo mês, no dia escolhido, a partir de agora.</p>'
+      + '<div class="sheet-actions">'
+      +   (editing ? '<button class="btn danger" data-action="confirm-delete-recorrente" data-id="'+m.editingId+'">Excluir</button>' : '<button class="btn ghost" data-action="close-modal">Cancelar</button>')
+      +   '<button class="btn primary" data-action="save-recorrente" data-editing="'+(editing?m.editingId:'')+'">Salvar</button>'
+      + '</div>' + modalCloseTag();
+  }
+
   function renderConfirm(){
     var c = state.ui.confirm;
     if (!c) return '';
@@ -1452,6 +1633,25 @@
     var divisao = tipo==='despesa' ? (m.divisao || existing.divisao || 'individual') : null;
     var isFoodCat = (categoria==='alimentacao' || categoria==='restaurantes');
     var metodoPagamento = (tipo==='despesa' && isFoodCat) ? (m.metodo || existing.metodoPagamento || 'normal') : null;
+
+    if (!editingId && tipo==='despesa'){
+      var parcelasEl = document.getElementById('field-parcelas');
+      var numParcelas = parcelasEl ? parseInt(parcelasEl.value, 10) : 1;
+      if (numParcelas && numParcelas > 1 && numParcelas <= 60){
+        var grupoId = genId();
+        var writes = [];
+        for (var i=0; i<numParcelas; i++){
+          var dataParcela = i===0 ? data : addMonthsClamped(data, i);
+          var txParcela = { id:genId(), tipo:'despesa', valor:valor, categoria:categoria, data:dataParcela, quem:quem, descricao:descricao, divisao:divisao, metodoPagamento:metodoPagamento, parcelaInfo:{grupoId:grupoId, atual:i+1, total:numParcelas}, criadoEm:Date.now()+i };
+          writes.push(upsertTransactionDoc(txParcela));
+        }
+        state.ui.modal = null;
+        showToast(numParcelas+'x de '+fmtBRL(valor)+' registradas');
+        render();
+        return;
+      }
+    }
+
     var tx;
     if (editingId){
       tx = Object.assign({}, existing, { id:editingId, tipo:tipo, valor:valor, categoria:categoria, data:data, quem:quem, descricao:descricao, divisao:divisao, metodoPagamento:metodoPagamento });
@@ -1526,6 +1726,50 @@
   }
   function removeSettlement(mesAno){ showToast('Registro removido'); render(); deleteSettlementDoc(mesAno); }
 
+  function saveRecorrenteFromModal(editingId){
+    var m = state.ui.modal;
+    var existing = editingId ? (state.recorrentes.find(function(x){return x.id===editingId;}) || {}) : {};
+    var valorRaw = document.getElementById('field-rec-valor').value;
+    var valor = parseMoney(valorRaw);
+    var errValor = document.getElementById('err-rec-valor');
+    if (!valor || valor<=0 || isNaN(valor)){ errValor.style.display='block'; return; }
+    errValor.style.display = 'none';
+    var diaRaw = document.getElementById('field-rec-dia').value;
+    var dia = parseInt(diaRaw, 10);
+    var errDia = document.getElementById('err-rec-dia');
+    if (!dia || dia<1 || dia>31 || isNaN(dia)){ errDia.style.display='block'; return; }
+    errDia.style.display = 'none';
+    var categoria = document.getElementById('field-rec-categoria').value;
+    var quem = document.getElementById('field-rec-quem').value;
+    var descricao = document.getElementById('field-rec-descricao').value.trim();
+    var divisao = m.divisao || existing.divisao || 'individual';
+    var ativo = m.ativo != null ? m.ativo : (editingId ? (existing.ativo!==false) : true);
+    var r;
+    if (editingId){
+      r = Object.assign({}, existing, { id:editingId, valor:valor, dia:dia, categoria:categoria, quem:quem, descricao:descricao, divisao:divisao, ativo:ativo });
+    } else {
+      r = { id:genId(), valor:valor, dia:dia, categoria:categoria, quem:quem, descricao:descricao, divisao:divisao, ativo:true, criadoEm:Date.now(), ultimoGerado:null };
+    }
+    state.ui.modal = null;
+    showToast(editingId ? 'Despesa recorrente atualizada' : 'Despesa recorrente criada');
+    render();
+    upsertRecorrenteDoc(r).then(function(){ processarRecorrentes(); });
+  }
+  function deleteRecorrente(id){
+    showToast('Despesa recorrente excluída');
+    render();
+    deleteRecorrenteDoc(id);
+  }
+  function toggleAtivoRecorrente(id){
+    var idx = state.recorrentes.findIndex(function(x){return x.id===id;});
+    if (idx===-1) return;
+    var updated = Object.assign({}, state.recorrentes[idx], { ativo: !state.recorrentes[idx].ativo });
+    state.recorrentes = state.recorrentes.slice();
+    state.recorrentes[idx] = updated;
+    render();
+    upsertRecorrenteDoc(updated).then(function(){ if (updated.ativo) processarRecorrentes(); });
+  }
+
   function updateBudget(catId, rawVal){
     var v = parseMoney(rawVal);
     if (!rawVal || isNaN(v) || v<=0){ delete state.budgets[catId]; } else { state.budgets[catId]=v; }
@@ -1571,7 +1815,8 @@
   }
   function exportJSON(){
     var data = { settings:state.settings, transactions:state.transactions, budgets:state.budgets, goals:state.goals,
-      settlements: Object.keys(state.settlements).map(function(k){return state.settlements[k];}), exportadoEm:new Date().toISOString() };
+      settlements: Object.keys(state.settlements).map(function(k){return state.settlements[k];}),
+      recorrentes: state.recorrentes, exportadoEm:new Date().toISOString() };
     downloadBlob(JSON.stringify(data,null,2), 'livro-caixa-a-dois.json', 'application/json');
   }
   function exportCSV(){
@@ -1595,14 +1840,15 @@
         if (data.budgets){ state.budgets = data.budgets; jobs.push(saveHouseholdMeta()); }
         if (Array.isArray(data.goals)) jobs.push(replaceAllGoals(data.goals));
         if (Array.isArray(data.settlements)) jobs.push(replaceAllSettlements(data.settlements));
+        if (Array.isArray(data.recorrentes)) jobs.push(replaceAllRecorrentes(data.recorrentes));
         Promise.all(jobs).then(function(){ showToast('Dados importados'); render(); });
       } catch(err){ showToast('Arquivo inválido. Exporte um .json deste mesmo painel.'); }
     };
     reader.readAsText(input.files[0]);
   }
   function resetAllData(){
-    Promise.all([ deleteAllInCollection('transactions'), deleteAllInCollection('goals'), deleteAllInCollection('settlements') ]).then(function(){
-      if (isDemo()){ state.transactions=[]; state.goals=[]; state.settlements={}; }
+    Promise.all([ deleteAllInCollection('transactions'), deleteAllInCollection('goals'), deleteAllInCollection('settlements'), deleteAllInCollection('recorrentes') ]).then(function(){
+      if (isDemo()){ state.transactions=[]; state.goals=[]; state.settlements={}; state.recorrentes=[]; }
       state.budgets = {};
       return saveHouseholdMeta();
     }).then(function(){ showToast('Todos os dados foram apagados'); render(); });
@@ -1701,6 +1947,34 @@
         state.ui.confirm = { message:'Remover este registro de acerto? A situação volta a ser calculada normalmente pelos lançamentos do mês.', action:'remove-settlement', payload:btn.getAttribute('data-mesano') };
         render();
         break;
+      case 'open-add-recorrente': state.ui.modal = { type:'recorrente', divisao:'individual' }; render(); break;
+      case 'edit-recorrente': state.ui.modal = { type:'recorrente', editingId:btn.getAttribute('data-id') }; render(); break;
+      case 'modal-set-rec-divisao':
+        state.ui.modal.divisao = btn.getAttribute('data-divisao');
+        state.ui.modal.valor = document.getElementById('field-rec-valor') ? document.getElementById('field-rec-valor').value : state.ui.modal.valor;
+        state.ui.modal.categoria = document.getElementById('field-rec-categoria') ? document.getElementById('field-rec-categoria').value : state.ui.modal.categoria;
+        state.ui.modal.dia = document.getElementById('field-rec-dia') ? document.getElementById('field-rec-dia').value : state.ui.modal.dia;
+        state.ui.modal.quem = document.getElementById('field-rec-quem') ? document.getElementById('field-rec-quem').value : state.ui.modal.quem;
+        state.ui.modal.descricao = document.getElementById('field-rec-descricao') ? document.getElementById('field-rec-descricao').value : state.ui.modal.descricao;
+        state.ui.modal.__noAnim = true;
+        render();
+        break;
+      case 'modal-set-rec-ativo':
+        state.ui.modal.ativo = btn.getAttribute('data-ativo') === '1';
+        state.ui.modal.valor = document.getElementById('field-rec-valor') ? document.getElementById('field-rec-valor').value : state.ui.modal.valor;
+        state.ui.modal.categoria = document.getElementById('field-rec-categoria') ? document.getElementById('field-rec-categoria').value : state.ui.modal.categoria;
+        state.ui.modal.dia = document.getElementById('field-rec-dia') ? document.getElementById('field-rec-dia').value : state.ui.modal.dia;
+        state.ui.modal.quem = document.getElementById('field-rec-quem') ? document.getElementById('field-rec-quem').value : state.ui.modal.quem;
+        state.ui.modal.descricao = document.getElementById('field-rec-descricao') ? document.getElementById('field-rec-descricao').value : state.ui.modal.descricao;
+        state.ui.modal.__noAnim = true;
+        render();
+        break;
+      case 'save-recorrente': saveRecorrenteFromModal(btn.getAttribute('data-editing')||null); break;
+      case 'confirm-delete-recorrente':
+        state.ui.confirm = { message:'Excluir esta despesa recorrente? Os lançamentos já gerados continuam no histórico — só as futuras entradas automáticas param.', action:'delete-recorrente', payload:btn.getAttribute('data-id') };
+        render();
+        break;
+      case 'toggle-ativo-recorrente': toggleAtivoRecorrente(btn.getAttribute('data-id')); break;
       case 'set-pessoa': state.ui.pessoaSel = parseInt(btn.getAttribute('data-pessoa'),10); render(); break;
       case 'save-settings': saveSettingsFromForm(); break;
       case 'export-json': exportJSON(); break;
@@ -1723,6 +1997,7 @@
         else if (c.action==='reset-all') resetAllData();
         else if (c.action==='disconnect') disconnectCloud();
         else if (c.action==='remove-settlement') removeSettlement(c.payload);
+        else if (c.action==='delete-recorrente') deleteRecorrente(c.payload);
         break;
     }
   });
