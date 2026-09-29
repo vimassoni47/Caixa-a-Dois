@@ -313,7 +313,7 @@
   var TABS = [
     {id:'inicio', label:'Início', kicker:'Panorama do mês', title:'Início'},
     {id:'lancamentos', label:'Lançamentos', kicker:'Tudo que entrou e saiu', title:'Lançamentos'},
-    {id:'pessoas', label:'Pessoas', kicker:'Divisão e acerto de contas', title:'Pessoas'},
+    {id:'pessoas', label:'Pessoas', kicker:'Saldo, divisão e histórico', title:'Pessoas'},
     {id:'categorias', label:'Categorias', kicker:'Orçamento por categoria', title:'Categorias'},
     {id:'metas', label:'Metas', kicker:'Planos de vocês dois', title:'Metas'},
     {id:'ajustes', label:'Ajustes', kicker:'Conta, dados e sincronização', title:'Ajustes'}
@@ -346,7 +346,7 @@
     loaded:false,
     isMobile: typeof window !== 'undefined' && window.innerWidth < 900,
     settings:{ nome1:'Pessoa 1', nome2:'Pessoa 2', split1:50, split2:50, limite1:0, limite2:0 },
-    transactions:[], budgets:{}, goals:[], settlements:{}, recorrentes:[],
+    transactions:[], budgets:{}, goals:[], settlements:{}, recorrentes:[], pagamentos:[],
     ui:{
       tab:'inicio', month: today.getMonth(), year: today.getFullYear(),
       modal:null, confirm:null, toast:null,
@@ -492,6 +492,12 @@
         if (state.cloud.connected) render();
       }, function(err){ handleCloudError(err); }));
 
+      cloud.unsubs.push(hhRef.collection('pagamentos').onSnapshot(function(snap){
+        var list=[]; snap.forEach(function(d){ list.push(Object.assign({id:d.id}, d.data())); });
+        state.pagamentos = list;
+        if (state.cloud.connected) render();
+      }, function(err){ handleCloudError(err); }));
+
       setTimeout(function(){
         if (!gotHousehold && state.cloud.connecting){
           state.cloud.connecting=false;
@@ -556,6 +562,7 @@
       { id:'g2', titulo:'Reserva de emergência', alvo:24000, atual:24000, prazo:null, criadoEm:2 }
     ];
     state.settlements = {};
+    state.pagamentos = [];
     state.transactions = tx;
     render();
   }
@@ -605,6 +612,14 @@
     if (isDemo()) return localRemove('recorrentes', id).then(render);
     return householdRef().collection('recorrentes').doc(id).delete().catch(function(){ showToast('Não foi possível excluir a despesa recorrente.'); });
   }
+  function upsertPagamentoDoc(p){
+    if (isDemo()) return localUpsert('pagamentos', p).then(render);
+    return householdRef().collection('pagamentos').doc(p.id).set(p).catch(function(){ showToast('Não foi possível salvar o pagamento.'); });
+  }
+  function deletePagamentoDoc(id){
+    if (isDemo()) return localRemove('pagamentos', id).then(render);
+    return householdRef().collection('pagamentos').doc(id).delete().catch(function(){ showToast('Não foi possível excluir o pagamento.'); });
+  }
   function saveHouseholdMeta(){
     if (isDemo()) return Promise.resolve();
     return householdRef().set({ nome1:state.settings.nome1, nome2:state.settings.nome2, split1:state.settings.split1, split2:state.settings.split2, limite1:state.settings.limite1, limite2:state.settings.limite2, budgets:state.budgets }, {merge:true})
@@ -633,6 +648,12 @@
     var batch = cloud.db.batch();
     list.forEach(function(r){ batch.set(householdRef().collection('recorrentes').doc(r.id), r); });
     return batch.commit().catch(function(){ showToast('Não foi possível importar as despesas recorrentes.'); });
+  }
+  function replaceAllPagamentos(list){
+    if (isDemo()){ state.pagamentos = list; return Promise.resolve(); }
+    var batch = cloud.db.batch();
+    list.forEach(function(p){ batch.set(householdRef().collection('pagamentos').doc(p.id), p); });
+    return batch.commit().catch(function(){ showToast('Não foi possível importar os pagamentos.'); });
   }
   function deleteAllInCollection(name){
     if (isDemo()) return Promise.resolve();
@@ -668,14 +689,7 @@
       renda1:renda1, renda2:renda2, gastos1:gastos1, gastos2:gastos2,
       sobra1:renda1-gastos1, sobra2:renda2-gastos2, diff1: pago1-justo1 };
   }
-  function acertoLabel(diff1, pessoa){
-    var st = state.settings, cents = Math.round(Math.abs(diff1)*100)/100;
-    if (cents<0.01) return 'Contas em dia';
-    if (pessoa===1) return diff1>0 ? (st.nome2+' deve '+fmtBRL(cents)) : ('Deve '+fmtBRL(cents)+' a '+st.nome2);
-    return diff1<0 ? (st.nome1+' deve '+fmtBRL(cents)) : ('Deve '+fmtBRL(cents)+' a '+st.nome1);
-  }
   function mesAnoKey(year, month){ return year+'-'+String(month+1).padStart(2,'0'); }
-  function getSettlement(year, month){ return state.settlements[mesAnoKey(year,month)] || null; }
 
   var processandoRecorrentes = false;
   function processarRecorrentes(){
@@ -711,6 +725,29 @@
     });
     Promise.all(writes).then(function(){ processandoRecorrentes = false; }).catch(function(){ processandoRecorrentes = false; });
     if (!writes.length) processandoRecorrentes = false;
+  }
+
+  function dividaSummary(){
+    var s1 = state.settings.split1/100, s2 = state.settings.split2/100;
+    var compartilhadas = state.transactions.filter(function(t){ return t.tipo==='despesa' && divisaoOf(t)==='compartilhado'; })
+      .slice().sort(function(a,b){ return String(b.data).localeCompare(String(a.data)) || (b.criadoEm||0)-(a.criadoEm||0); });
+    var total = sumValores(compartilhadas);
+    var pago1 = sumValores(compartilhadas.filter(function(t){return t.quem===state.settings.nome1;}));
+    var pago2 = sumValores(compartilhadas.filter(function(t){return t.quem===state.settings.nome2;}));
+    var justo1 = total*s1, justo2 = total*s2;
+    var diffBruto = pago1 - justo1;
+    var pagamentosLiquido = 0;
+    state.pagamentos.forEach(function(p){
+      if (p.pagador===state.settings.nome2 && p.recebedor===state.settings.nome1) pagamentosLiquido += p.valor;
+      else if (p.pagador===state.settings.nome1 && p.recebedor===state.settings.nome2) pagamentosLiquido -= p.valor;
+    });
+    var diffFinal = diffBruto - pagamentosLiquido;
+    return { total:total, pago1:pago1, pago2:pago2, justo1:justo1, justo2:justo2, diffFinal:diffFinal, compartilhadas:compartilhadas, totalPago:sumValores(state.pagamentos) };
+  }
+  function dividaLabel(diff){
+    var st = state.settings, cents = Math.round(Math.abs(diff)*100)/100;
+    if (cents<0.01) return 'Contas em dia';
+    return diff>0 ? (st.nome2+' deve '+fmtBRL(cents)+' a '+st.nome1) : (st.nome1+' deve '+fmtBRL(cents)+' a '+st.nome2);
   }
 
   function vrSummary(){
@@ -956,17 +993,9 @@
       }
     });
 
-    var settlementRec = getSettlement(state.ui.year, state.ui.month);
-    var acertoTexto, acertoColor;
-    if (settlementRec){
-      acertoColor = settlementRec.decisao==='pago' ? '#A8C48A' : '#D9CBB0';
-      acertoTexto = settlementRec.decisao==='pago'
-        ? ('Quitado — '+escapeHtml(settlementRec.devedor)+' pagou '+fmtBRL(settlementRec.valor))
-        : ('Deixaram quieto · '+fmtBRL(settlementRec.valor));
-    } else {
-      acertoTexto = acertoLabel(sum.diff1, 1);
-      acertoColor = Math.abs(sum.diff1)<0.01 ? '#EDE3D2' : (sum.diff1>0?'#A8C48A':'#E8A98A');
-    }
+    var dsInicio = dividaSummary();
+    var acertoTexto = dividaLabel(dsInicio.diffFinal);
+    var acertoColor = Math.abs(dsInicio.diffFinal)<0.01 ? '#EDE3D2' : '#A8C48A';
 
     var distribRaw = [
       {label:'Compartilhado', valor:sum.total, color:'#4A5D5A'},
@@ -1014,7 +1043,7 @@
       + '</div>';
 
     html += '<button class="dark-panel" data-action="set-tab" data-tab="pessoas" style="text-align:left;border:none;display:flex;flex-direction:column;justify-content:space-between;gap:18px;cursor:pointer;">'
-      + '<div><p style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#A79881;margin:0 0 10px;">Acerto de contas do mês</p><p class="disp" style="font-weight:500;font-size:clamp(21px,3vw,27px);line-height:1.2;margin:0;color:'+acertoColor+'">'+acertoTexto+'</p></div>'
+      + '<div><p style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#A79881;margin:0 0 10px;">Saldo entre vocês</p><p class="disp" style="font-weight:500;font-size:clamp(21px,3vw,27px);line-height:1.2;margin:0;color:'+acertoColor+'">'+acertoTexto+'</p></div>'
       + '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><span style="font-size:12.5px;color:#A79881;">Compartilhado do mês · '+fmtBRL(sum.total)+'</span><span style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.09);flex:none;">'+ICONS.chevR+'</span></div>'
       + '</button>';
     html += '</div>';
@@ -1133,6 +1162,15 @@
   }
 
   /* ---------- PESSOAS ---------- */
+  function pagamentoRowHtml(p){
+    return '<div class="tx-row" style="background:#EEF4E9;border-color:#D7E5CB;">'
+      + '<span class="tx-avatar mono" style="background:#4F7A4A;color:#FFFDF8;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></span>'
+      + '<span class="tx-mid"><span class="tx-desc">Pagamento \u00b7 '+escapeHtml(p.pagador)+' \u2192 '+escapeHtml(p.recebedor)+'</span><span class="tx-meta">'+fmtDateShort(p.data)+(p.observacao?' \u00b7 '+escapeHtml(p.observacao):'')+'</span></span>'
+      + '<span class="tx-amt mono" style="color:#3A5C37;">'+fmtBRL(p.valor)+'</span>'
+      + '<button class="edit-btn" data-action="edit-pagamento" data-id="'+p.id+'" aria-label="Editar pagamento">'+ICONS.edit+'</button>'
+      + '</div>';
+  }
+
   function renderTabPessoas(){
     var sel = state.ui.pessoaSel===2 ? 2 : 1;
     var nomeSel = sel===1 ? state.settings.nome1 : state.settings.nome2;
@@ -1140,95 +1178,61 @@
     var mtx = monthTransactions(state.ui.year, state.ui.month);
     var sum = splitSummary(mtx);
     var diffSel = sel===1 ? sum.diff1 : -sum.diff1;
-    var settlementRec = getSettlement(state.ui.year, state.ui.month);
 
-    var html = '<div class="seg-pessoa" style="margin-bottom:18px;">'
+    var ds = dividaSummary();
+    var diff = ds.diffFinal;
+    var quitado = Math.abs(diff) < 0.01;
+
+    var html = '<div class="dark-panel" style="margin-bottom:16px;">'
+      + '<p style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#A79881;margin:0 0 10px;">Saldo acumulado entre voc\u00eas</p>'
+      + '<p class="disp" style="font-weight:500;font-size:clamp(24px,4vw,32px);line-height:1.2;margin:0 0 10px;color:'+(quitado?'#EDE3D2':'#A8C48A')+';">'+dividaLabel(diff)+'</p>'
+      + '<p style="font-size:12.5px;color:#A79881;margin:0 0 18px;line-height:1.5;max-width:520px;">Soma de todas as despesas compartilhadas desde sempre, menos os pagamentos j\u00e1 registrados. N\u00e3o reseta todo m\u00eas \u2014 s\u00f3 muda quando entra uma despesa compartilhada nova ou voc\u00eas registram um pagamento aqui.</p>'
+      + (!quitado ? '<button class="btn small accent" data-action="open-add-pagamento">Registrar pagamento</button>' : '')
+      + '</div>';
+
+    html += '<div class="grid-auto2" style="gap:12px;margin-bottom:24px;">'
+      + '<div class="stat-mini"><p class="lbl">Total compartilhado</p><p class="mono">'+fmtBRL(ds.total)+'</p></div>'
+      + '<div class="stat-mini"><p class="lbl">Pago por '+escapeHtml(state.settings.nome1)+'</p><p class="mono" style="color:'+PESSOA1_COLOR+';">'+fmtBRL(ds.pago1)+'</p></div>'
+      + '<div class="stat-mini"><p class="lbl">Pago por '+escapeHtml(state.settings.nome2)+'</p><p class="mono" style="color:'+PESSOA2_COLOR+';">'+fmtBRL(ds.pago2)+'</p></div>'
+      + '<div class="stat-mini"><p class="lbl">J\u00e1 quitado</p><p class="mono" style="color:#3A5C37;">'+fmtBRL(ds.totalPago)+'</p></div>'
+      + '</div>';
+
+    html += '<p class="disp" style="font-size:17px;font-weight:500;margin:0 0 4px;">Panorama pessoal \u00b7 '+MESES[state.ui.month]+'</p>'
+      + '<p style="font-size:12.5px;color:#6E6455;margin:0 0 14px;">Renda, gastos e contribui\u00e7\u00e3o de cada um s\u00f3 neste m\u00eas.</p>';
+
+    html += '<div class="seg-pessoa" style="margin-bottom:18px;">'
       + '<button class="'+(sel===1?'active':'')+'" data-action="set-pessoa" data-pessoa="1">'+escapeHtml(state.settings.nome1)+'</button>'
       + '<button class="'+(sel===2?'active':'')+'" data-action="set-pessoa" data-pessoa="2">'+escapeHtml(state.settings.nome2)+'</button>'
       + '</div>';
 
-    html += '<div class="grid-auto2">';
-    if (settlementRec){
-      var recColor = settlementRec.decisao==='pago' ? '#A8C48A' : '#D9CBB0';
-      var recLabel = settlementRec.decisao==='pago'
-        ? (escapeHtml(settlementRec.devedor)+' pagou '+fmtBRL(settlementRec.valor)+' a '+escapeHtml(settlementRec.credor))
-        : ('Vocês decidiram deixar de lado '+fmtBRL(settlementRec.valor));
-      var driftAmt = Math.round(Math.abs(diffSel - (sel===1?settlementRec.diff1Snapshot:-settlementRec.diff1Snapshot))*100)/100;
-      html += '<div class="dark-panel" style="align-self:start;">'
-        + '<p style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#A79881;margin:0 0 10px;">'+(settlementRec.decisao==='pago'?'Quitado':'Deixado quieto')+' · '+fmtDateShort(settlementRec.data)+'</p>'
-        + '<p class="disp" style="font-weight:500;font-size:clamp(21px,3vw,26px);line-height:1.2;margin:0 0 14px;color:'+recColor+'">'+recLabel+'</p>'
-        + (settlementRec.observacao ? '<p style="font-size:12.5px;color:#D9CBB0;margin:0 0 14px;">'+escapeHtml(settlementRec.observacao)+'</p>' : '')
-        + (driftAmt>=0.01 ? '<p style="font-size:11.5px;color:#E8C88A;margin:0 0 14px;line-height:1.5;">Há lançamentos novos desde esse acerto — situação atual: '+acertoLabel(sum.diff1, sel)+'</p>' : '')
-        + '<button class="btn small ghost" data-action="confirm-remove-settlement" data-mesano="'+mesAnoKey(state.ui.year,state.ui.month)+'" style="background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.16);color:#EDE3D2;">Remover este registro</button>'
-        + '</div>';
-    } else {
-      html += '<div class="dark-panel" style="align-self:start;">'
-        + '<p style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#A79881;margin:0 0 10px;">Situação de '+escapeHtml(nomeSel)+'</p>'
-        + '<p class="disp" style="font-weight:500;font-size:clamp(21px,3vw,26px);line-height:1.2;margin:0 0 14px;color:'+(Math.abs(diffSel)<0.01?'#EDE3D2':(diffSel>0?'#A8C48A':'#E8A98A'))+'">'+acertoLabel(sum.diff1, sel)+'</p>'
-        + '<p style="font-size:12.5px;color:#A79881;margin:0 0 '+(Math.abs(sum.diff1)>=0.01?'16px':'0')+';line-height:1.55;">Comparando o que '+escapeHtml(nomeSel)+' pagou de despesas compartilhadas com a parte combinada de '+(sel===1?state.settings.split1:state.settings.split2)+'%.</p>'
-        + (Math.abs(sum.diff1)>=0.01 ? '<button class="btn small accent" data-action="open-settlement">Registrar acerto deste mês</button>' : '')
-        + '</div>';
-    }
-    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;align-self:start;">'
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px;">'
       + '<div class="stat-mini"><p class="lbl">Renda</p><p class="mono" style="color:#3A5C37;">'+fmtBRL(sel===1?sum.renda1:sum.renda2)+'</p></div>'
       + '<div class="stat-mini"><p class="lbl">Gastos</p><p class="mono" style="color:#94492A;">'+fmtBRL(sel===1?sum.gastos1:sum.gastos2)+'</p></div>'
       + '<div class="stat-mini"><p class="lbl">Sobra</p><p class="mono" style="color:'+((sel===1?sum.sobra1:sum.sobra2)<0?'#94492A':'#2A241C')+'">'+fmtBRL(sel===1?sum.sobra1:sum.sobra2)+'</p></div>'
       + '<div class="stat-mini"><p class="lbl">Individual</p><p class="mono">'+fmtBRL(sel===1?sum.ind1:sum.ind2)+'</p></div>'
       + '</div>';
-    html += '</div>';
-
-    var compartilhadas = despesasCompartilhadas(mtx).slice().sort(function(a,b){ return String(b.data).localeCompare(String(a.data)) || (b.criadoEm||0)-(a.criadoEm||0); });
-    var comp1 = compartilhadas.filter(function(t){return t.quem===state.settings.nome1;});
-    var comp2 = compartilhadas.filter(function(t){return t.quem===state.settings.nome2;});
-    html += '<div class="card" style="margin-top:16px;">'
-      + '<p class="disp card-title">Despesas compartilhadas do mês</p>'
-      + '<p class="card-sub">A base do acerto de contas acima — quem lançou o quê.</p>'
-      + '<div style="margin-bottom:22px;">'
-      +   '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;"><span style="font-weight:600;font-size:14px;">'+escapeHtml(state.settings.nome1)+'</span><span class="mono" style="font-weight:600;color:'+PESSOA1_COLOR+';">'+fmtBRL(sum.pago1)+'</span></div>'
-      +   (comp1.length ? comp1.map(txRowHtml).join('') : '<p style="font-size:12.5px;color:#9C9480;margin:0;">Nenhuma despesa compartilhada lançada por '+escapeHtml(state.settings.nome1)+' este mês.</p>')
-      + '</div>'
-      + '<div>'
-      +   '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;"><span style="font-weight:600;font-size:14px;">'+escapeHtml(state.settings.nome2)+'</span><span class="mono" style="font-weight:600;color:'+PESSOA2_COLOR+';">'+fmtBRL(sum.pago2)+'</span></div>'
-      +   (comp2.length ? comp2.map(txRowHtml).join('') : '<p style="font-size:12.5px;color:#9C9480;margin:0;">Nenhuma despesa compartilhada lançada por '+escapeHtml(state.settings.nome2)+' este mês.</p>')
-      + '</div>'
-      + '</div>';
-
-    var porCatComp = {};
-    compartilhadas.forEach(function(t){ porCatComp[t.categoria]=(porCatComp[t.categoria]||0)+(t.valor||0); });
-    var compIds = Object.keys(porCatComp).sort(function(a,b){return porCatComp[b]-porCatComp[a];});
-    var maxComp = compIds.length ? porCatComp[compIds[0]] : 1;
-    html += '<div class="card" style="margin-top:16px;"><p class="disp card-title">Compartilhado por categoria</p><p class="card-sub">'+(compIds.length?compIds.length+' categorias com movimento neste mês':'Nada lançado ainda')+'</p>';
-    if (compIds.length){
-      html += compIds.map(function(id){
-        var c = catById(id,'despesa');
-        return '<div class="barrow"><div class="barrow-head"><span class="lb">'+c.label+'</span><span class="mono vv">'+fmtBRL(porCatComp[id])+'</span></div><div class="track"><div class="track-fill" style="width:'+((porCatComp[id]/maxComp)*100).toFixed(1)+'%;background:'+c.color+';"></div></div></div>';
-      }).join('');
-    } else {
-      html += '<div class="empty-box"><div class="empty-dot"></div><p>Nenhuma despesa compartilhada lançada neste mês.</p></div>';
-    }
-    html += '</div>';
 
     var pPago = sel===1?sum.pago1:sum.pago2, pJusto = sel===1?sum.justo1:sum.justo2;
     var pMax = Math.max(pPago, pJusto, 1);
-    html += '<div class="grid-auto2" style="margin-top:16px;">';
-    html += '<div class="card"><p class="disp card-title">Pagou x parte combinada</p><p class="card-sub">Só despesas marcadas como compartilhadas</p>'
+    html += '<div class="grid-auto2" style="margin-bottom:16px;">';
+    html += '<div class="card"><p class="disp card-title">Pagou x parte combinada</p><p class="card-sub">S\u00f3 despesas compartilhadas, neste m\u00eas</p>'
       + '<div class="barrow"><div class="barrow-head"><span class="lb">Pagou</span><b class="mono">'+fmtBRL(pPago)+'</b></div><div class="track track-thick"><div class="track-fill" style="width:'+((pPago/pMax)*100).toFixed(1)+'%;background:'+pessoaColor+';"></div></div></div>'
       + '<div class="barrow"><div class="barrow-head"><span class="lb">Parte combinada ('+(sel===1?state.settings.split1:state.settings.split2)+'%)</span><b class="mono">'+fmtBRL(pJusto)+'</b></div><div class="track track-thick"><div class="track-fill" style="width:'+((pJusto/pMax)*100).toFixed(1)+'%;background:#D9C79C;"></div></div></div>'
-      + '<p style="font-size:12.5px;color:#6E6455;margin:20px 0 0;line-height:1.55;padding-top:16px;border-top:1px solid #F1EADC;">'+(Math.abs(diffSel)<0.01 ? 'As contas compartilhadas deste mês estão equilibradas entre vocês.' : (diffSel>0 ? escapeHtml(nomeSel)+' pagou '+fmtBRL(Math.abs(diffSel))+' além da parte combinada — esse valor deve ser devolvido.' : escapeHtml(nomeSel)+' pagou '+fmtBRL(Math.abs(diffSel))+' menos que a parte combinada.'))+'</p>'
+      + '<p style="font-size:12.5px;color:#6E6455;margin:20px 0 0;line-height:1.55;padding-top:16px;border-top:1px solid #F1EADC;">'+(Math.abs(diffSel)<0.01 ? 'As contas compartilhadas deste m\u00eas est\u00e3o equilibradas entre voc\u00eas.' : (diffSel>0 ? escapeHtml(nomeSel)+' pagou '+fmtBRL(Math.abs(diffSel))+' al\u00e9m da parte combinada este m\u00eas.' : escapeHtml(nomeSel)+' pagou '+fmtBRL(Math.abs(diffSel))+' menos que a parte combinada este m\u00eas.'))+'</p>'
       + '</div>';
 
     var porCatInd = {};
     despesasIndividuais(mtx, nomeSel).forEach(function(t){ porCatInd[t.categoria]=(porCatInd[t.categoria]||0)+(t.valor||0); });
     var indIds = Object.keys(porCatInd).sort(function(a,b){return porCatInd[b]-porCatInd[a];});
     var maxInd = indIds.length ? porCatInd[indIds[0]] : 1;
-    html += '<div class="card"><p class="disp card-title">Gastos individuais</p><p class="card-sub">Por categoria, só de '+escapeHtml(nomeSel)+'</p>';
+    html += '<div class="card"><p class="disp card-title">Gastos individuais</p><p class="card-sub">Por categoria, s\u00f3 de '+escapeHtml(nomeSel)+'</p>';
     if (indIds.length){
       html += indIds.map(function(id){
         var c = catById(id,'despesa');
         return '<div class="barrow"><div class="barrow-head"><span class="lb">'+c.label+'</span><span class="mono vv">'+fmtBRL(porCatInd[id])+'</span></div><div class="track"><div class="track-fill" style="width:'+((porCatInd[id]/maxInd)*100).toFixed(1)+'%;background:'+c.color+';"></div></div></div>';
       }).join('');
     } else {
-      html += '<div class="empty-box"><div class="empty-dot"></div><p>'+escapeHtml(nomeSel)+' não tem despesas individuais neste mês.</p></div>';
+      html += '<div class="empty-box"><div class="empty-dot"></div><p>'+escapeHtml(nomeSel)+' n\u00e3o tem despesas individuais neste m\u00eas.</p></div>';
     }
     html += '</div></div>';
 
@@ -1240,12 +1244,60 @@
       sobraSeq.push({label:ABR[d.getMonth()], valor: sel===1?sp.sobra1:sp.sobra2});
     }
     var maxAbsS = Math.max.apply(null, sobraSeq.map(function(x){return Math.abs(x.valor);}).concat([1]));
-    html += '<div class="card" style="margin-top:16px;"><p class="disp card-title">Sobra de '+escapeHtml(nomeSel)+' (6 meses)</p><p class="card-sub">Renda menos gastos individuais e parte do compartilhado</p>'
+    html += '<div class="card" style="margin-bottom:16px;"><p class="disp card-title">Sobra de '+escapeHtml(nomeSel)+' (6 meses)</p><p class="card-sub">Renda menos gastos individuais e parte do compartilhado</p>'
       + '<div class="colbars" style="height:160px;">' + sobraSeq.map(function(t){
           var h = Math.max(2, Math.round(Math.abs(t.valor)/maxAbsS*100));
-          return '<div class="colbar"><span class="mono colbar-val">'+(t.valor===0?'—':fmtShort(t.valor))+'</span><div class="colbar-fill" style="height:'+h+'%;background:'+(t.valor<0?'#B5623C':pessoaColor)+';" title="'+t.label+': '+fmtBRL(t.valor)+'"></div><span class="colbar-lbl">'+t.label+'</span></div>';
+          return '<div class="colbar"><span class="mono colbar-val">'+(t.valor===0?'\u2014':fmtShort(t.valor))+'</span><div class="colbar-fill" style="height:'+h+'%;background:'+(t.valor<0?'#B5623C':pessoaColor)+';" title="'+t.label+': '+fmtBRL(t.valor)+'"></div><span class="colbar-lbl">'+t.label+'</span></div>';
         }).join('') + '</div>'
       + '</div>';
+
+    var compartilhadasMes = despesasCompartilhadas(mtx);
+    var porCatComp = {};
+    compartilhadasMes.forEach(function(t){ porCatComp[t.categoria]=(porCatComp[t.categoria]||0)+(t.valor||0); });
+    var compIds = Object.keys(porCatComp).sort(function(a,b){return porCatComp[b]-porCatComp[a];});
+    var maxComp = compIds.length ? porCatComp[compIds[0]] : 1;
+    html += '<div class="card" style="margin-bottom:16px;"><p class="disp card-title">Compartilhado por categoria</p><p class="card-sub">'+(compIds.length?compIds.length+' categorias com movimento neste m\u00eas':'Nada lan\u00e7ado ainda')+'</p>';
+    if (compIds.length){
+      html += compIds.map(function(id){
+        var c = catById(id,'despesa');
+        return '<div class="barrow"><div class="barrow-head"><span class="lb">'+c.label+'</span><span class="mono vv">'+fmtBRL(porCatComp[id])+'</span></div><div class="track"><div class="track-fill" style="width:'+((porCatComp[id]/maxComp)*100).toFixed(1)+'%;background:'+c.color+';"></div></div></div>';
+      }).join('');
+    } else {
+      html += '<div class="empty-box"><div class="empty-dot"></div><p>Nenhuma despesa compartilhada lan\u00e7ada neste m\u00eas.</p></div>';
+    }
+    html += '</div>';
+
+    var eventos = [];
+    ds.compartilhadas.forEach(function(t){ eventos.push({tipo:'despesa', data:t.data, criadoEm:t.criadoEm||0, item:t}); });
+    state.pagamentos.forEach(function(p){ eventos.push({tipo:'pagamento', data:p.data, criadoEm:p.criadoEm||0, item:p}); });
+
+    html += '<p class="disp" style="font-size:17px;font-weight:500;margin:0 0 4px;">Hist\u00f3rico</p>'
+      + '<p style="font-size:12.5px;color:#6E6455;margin:0 0 16px;">Todas as despesas compartilhadas e pagamentos, m\u00eas a m\u00eas.</p>';
+
+    if (eventos.length===0){
+      html += '<div class="empty-dash"><div class="empty-dot" style="margin:0 auto 12px;"></div><p class="disp">Nada por aqui ainda</p><p class="small">Assim que voc\u00eas lan\u00e7arem uma despesa compartilhada, ela aparece aqui.</p></div>';
+      return html;
+    }
+
+    eventos.sort(function(a,b){ return String(b.data).localeCompare(String(a.data)) || ((b.criadoEm||0)-(a.criadoEm||0)); });
+    var groups = {}, order = [];
+    eventos.forEach(function(e){
+      var mk = String(e.data).slice(0,7);
+      if (!groups[mk]){ groups[mk]=[]; order.push(mk); }
+      groups[mk].push(e);
+    });
+    order.sort().reverse();
+
+    order.forEach(function(mk){
+      var parts = mk.split('-');
+      var mesLabel = MESES[parseInt(parts[1],10)-1]+' de '+parts[0];
+      var compMes = groups[mk].filter(function(e){return e.tipo==='despesa';}).reduce(function(s,e){return s+(e.item.valor||0);},0);
+      var pagMes = groups[mk].filter(function(e){return e.tipo==='pagamento';}).reduce(function(s,e){return s+(e.item.valor||0);},0);
+      html += '<div style="margin-bottom:22px;">'
+        + '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:9px;"><p class="day-label" style="margin:0;text-transform:capitalize;">'+mesLabel+'</p><span style="font-size:11px;color:#9C9480;">'+(compMes>0?'compartilhado '+fmtBRL(compMes):'')+(compMes>0&&pagMes>0?' \u00b7 ':'')+(pagMes>0?'pago '+fmtBRL(pagMes):'')+'</span></div>'
+        + groups[mk].map(function(e){ return e.tipo==='despesa' ? txRowHtml(e.item) : pagamentoRowHtml(e.item); }).join('')
+        + '</div>';
+    });
 
     return html;
   }
@@ -1409,8 +1461,8 @@
     if (m.type==='transaction') return renderTransactionModal(m);
     if (m.type==='goal') return renderGoalModal(m);
     if (m.type==='aporte') return renderAporteModal(m);
-    if (m.type==='settlement') return renderSettlementModal(m);
     if (m.type==='recorrente') return renderRecorrenteModal(m);
+    if (m.type==='pagamento') return renderPagamentoModal(m);
     return '';
   }
 
@@ -1515,33 +1567,6 @@
       + modalCloseTag();
   }
 
-  function renderSettlementModal(m){
-    var mtx = monthTransactions(state.ui.year, state.ui.month);
-    var sum = splitSummary(mtx);
-    var diff1 = sum.diff1, valor = Math.round(Math.abs(diff1)*100)/100;
-    var devedor = diff1>0 ? state.settings.nome2 : state.settings.nome1;
-    var credor = diff1>0 ? state.settings.nome1 : state.settings.nome2;
-    var decisao = m.decisao || 'pago';
-    var data = m.data || todayISO();
-    var obs = m.observacao != null ? m.observacao : '';
-    var mesLabel = MESES[state.ui.month]+' de '+state.ui.year;
-
-    return modalOpenTag(m)
-      + '<p class="disp sheet-title">Registrar acerto · '+mesLabel+'</p>'
-      + '<div class="card card-tight" style="text-align:center;margin-bottom:16px;">'
-      +   '<p style="font-size:11px;color:#74695A;text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Valor calculado</p>'
-      +   '<p class="disp" style="font-weight:500;font-size:17px;margin:0;">'+escapeHtml(devedor)+' deve '+fmtBRL(valor)+' a '+escapeHtml(credor)+'</p>'
-      + '</div>'
-      + '<div class="seg" style="margin-bottom:8px;">'
-      +   '<button style="background:'+(decisao==='pago'?'#DCE4CF':'transparent')+';color:'+(decisao==='pago'?'#3A5C37':'#6E6455')+';" data-action="modal-set-decisao" data-decisao="pago">Foi pago</button>'
-      +   '<button style="background:'+(decisao==='perdoado'?'#F4EFE4':'transparent')+';color:'+(decisao==='perdoado'?'#4A4234':'#6E6455')+';" data-action="modal-set-decisao" data-decisao="perdoado">Deixar quieto</button>'
-      + '</div>'
-      + (decisao==='pago' ? '<div class="field"><label>Data do pagamento</label><input type="date" id="field-settlement-data" value="'+data+'"></div>' : '<p style="font-size:11.5px;color:#74695A;margin:0 0 16px;line-height:1.5;">Vocês combinaram não cobrar esse valor. Isso só fica registrado no histórico, sem afetar os totais do mês.</p>')
-      + '<div class="field" style="margin-bottom:20px;"><label>Observação (opcional)</label><input type="text" id="field-settlement-obs" placeholder="Ex.: Pix enviado, dividimos o jantar…" value="'+escapeHtml(obs)+'"></div>'
-      + '<div class="sheet-actions"><button class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn primary" data-action="save-settlement">Salvar</button></div>'
-      + modalCloseTag();
-  }
-
   function renderRecorrenteModal(m){
     var editing = !!m.editingId;
     var r = editing ? state.recorrentes.find(function(x){return x.id===m.editingId;}) : null;
@@ -1577,6 +1602,39 @@
       + '<div class="sheet-actions">'
       +   (editing ? '<button class="btn danger" data-action="confirm-delete-recorrente" data-id="'+m.editingId+'">Excluir</button>' : '<button class="btn ghost" data-action="close-modal">Cancelar</button>')
       +   '<button class="btn primary" data-action="save-recorrente" data-editing="'+(editing?m.editingId:'')+'">Salvar</button>'
+      + '</div>' + modalCloseTag();
+  }
+
+  function renderPagamentoModal(m){
+    var editing = !!m.editingId;
+    var p = editing ? state.pagamentos.find(function(x){return x.id===m.editingId;}) : null;
+    var ds = dividaSummary();
+    var sugestaoPagador = ds.diffFinal>0 ? state.settings.nome2 : state.settings.nome1;
+    var sugestaoValor = Math.round(Math.abs(ds.diffFinal)*100)/100;
+    var pagador = m.pagador || (p && p.pagador) || sugestaoPagador;
+    var recebedor = pagador===state.settings.nome1 ? state.settings.nome2 : state.settings.nome1;
+    var valor = m.valor != null ? m.valor : (p ? p.valor : (sugestaoValor>0 ? sugestaoValor : ''));
+    var data = m.data || (p && p.data) || todayISO();
+    var obs = m.observacao != null ? m.observacao : (p ? p.observacao : '');
+
+    return modalOpenTag(m)
+      + '<p class="disp sheet-title">'+(editing?'Editar pagamento':'Registrar pagamento')+'</p>'
+      + '<div class="card card-tight" style="text-align:center;margin-bottom:16px;">'
+      +   '<p style="font-size:11px;color:#74695A;text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Saldo atual</p>'
+      +   '<p class="disp" style="font-weight:500;font-size:17px;margin:0;">'+dividaLabel(ds.diffFinal)+'</p>'
+      + '</div>'
+      + '<div class="field"><label>Quem está pagando</label><select id="field-pag-pagador">'
+      +   '<option value="'+escapeHtml(state.settings.nome1)+'" '+(pagador===state.settings.nome1?'selected':'')+'>'+escapeHtml(state.settings.nome1)+'</option>'
+      +   '<option value="'+escapeHtml(state.settings.nome2)+'" '+(pagador===state.settings.nome2?'selected':'')+'>'+escapeHtml(state.settings.nome2)+'</option>'
+      + '</select></div>'
+      + '<p style="font-size:11.5px;color:#74695A;margin:-10px 0 16px;">O valor vai para '+escapeHtml(recebedor)+'.</p>'
+      + '<div class="field"><label>Valor</label><div class="money-field"><span class="mono">R$</span><input type="text" inputmode="decimal" id="field-pag-valor" class="mono" autocomplete="off" placeholder="0,00" value="'+(valor!==''?String(valor).replace('.',','):'')+'"></div><div class="field-err" id="err-pag-valor" style="display:none;">Informe um valor maior que zero.</div></div>'
+      + '<p style="font-size:11.5px;color:#74695A;margin:-10px 0 16px;line-height:1.5;">Pode ser o valor cheio ou só uma parte — o saldo se ajusta sozinho.</p>'
+      + '<div class="field"><label>Data</label><input type="date" id="field-pag-data" value="'+data+'"></div>'
+      + '<div class="field" style="margin-bottom:20px;"><label>Observação (opcional)</label><input type="text" id="field-pag-obs" placeholder="Ex.: Pix, dinheiro…" value="'+escapeHtml(obs)+'"></div>'
+      + '<div class="sheet-actions">'
+      +   (editing ? '<button class="btn danger" data-action="confirm-delete-pagamento" data-id="'+m.editingId+'">Excluir</button>' : '<button class="btn ghost" data-action="close-modal">Cancelar</button>')
+      +   '<button class="btn primary" data-action="save-pagamento" data-editing="'+(editing?m.editingId:'')+'">Salvar</button>'
       + '</div>' + modalCloseTag();
   }
 
@@ -1707,25 +1765,6 @@
     upsertTransactionDoc(tx);
   }
 
-  function saveSettlementFromModal(){
-    var m = state.ui.modal;
-    var decisao = m.decisao || 'pago';
-    var mtx = monthTransactions(state.ui.year, state.ui.month);
-    var sum = splitSummary(mtx);
-    var diff1 = sum.diff1, valor = Math.round(Math.abs(diff1)*100)/100;
-    var devedor = diff1>0 ? state.settings.nome2 : state.settings.nome1;
-    var credor = diff1>0 ? state.settings.nome1 : state.settings.nome2;
-    var data = decisao==='pago' ? (document.getElementById('field-settlement-data').value || todayISO()) : todayISO();
-    var obs = (document.getElementById('field-settlement-obs').value || '').trim();
-    var rec = { mesAno: mesAnoKey(state.ui.year, state.ui.month), ano:state.ui.year, mes:state.ui.month,
-      decisao:decisao, valor:valor, devedor:devedor, credor:credor, diff1Snapshot:diff1, data:data, observacao:obs, criadoEm:Date.now() };
-    state.ui.modal = null;
-    showToast(decisao==='pago' ? 'Acerto registrado como pago' : 'Combinado: deixaram esse valor de lado');
-    render();
-    upsertSettlementDoc(rec);
-  }
-  function removeSettlement(mesAno){ showToast('Registro removido'); render(); deleteSettlementDoc(mesAno); }
-
   function saveRecorrenteFromModal(editingId){
     var m = state.ui.modal;
     var existing = editingId ? (state.recorrentes.find(function(x){return x.id===editingId;}) || {}) : {};
@@ -1768,6 +1807,35 @@
     state.recorrentes[idx] = updated;
     render();
     upsertRecorrenteDoc(updated).then(function(){ if (updated.ativo) processarRecorrentes(); });
+  }
+
+  function savePagamentoFromModal(editingId){
+    var m = state.ui.modal;
+    var existing = editingId ? (state.pagamentos.find(function(x){return x.id===editingId;}) || {}) : {};
+    var valorRaw = document.getElementById('field-pag-valor').value;
+    var valor = parseMoney(valorRaw);
+    var errEl = document.getElementById('err-pag-valor');
+    if (!valor || valor<=0 || isNaN(valor)){ errEl.style.display='block'; return; }
+    errEl.style.display = 'none';
+    var pagador = document.getElementById('field-pag-pagador').value;
+    var recebedor = pagador===state.settings.nome1 ? state.settings.nome2 : state.settings.nome1;
+    var data = document.getElementById('field-pag-data').value || todayISO();
+    var observacao = document.getElementById('field-pag-obs').value.trim();
+    var p;
+    if (editingId){
+      p = Object.assign({}, existing, { id:editingId, pagador:pagador, recebedor:recebedor, valor:valor, data:data, observacao:observacao });
+    } else {
+      p = { id:genId(), pagador:pagador, recebedor:recebedor, valor:valor, data:data, observacao:observacao, criadoEm:Date.now() };
+    }
+    state.ui.modal = null;
+    showToast(editingId ? 'Pagamento atualizado' : 'Pagamento registrado');
+    render();
+    upsertPagamentoDoc(p);
+  }
+  function deletePagamento(id){
+    showToast('Pagamento removido');
+    render();
+    deletePagamentoDoc(id);
   }
 
   function updateBudget(catId, rawVal){
@@ -1816,7 +1884,7 @@
   function exportJSON(){
     var data = { settings:state.settings, transactions:state.transactions, budgets:state.budgets, goals:state.goals,
       settlements: Object.keys(state.settlements).map(function(k){return state.settlements[k];}),
-      recorrentes: state.recorrentes, exportadoEm:new Date().toISOString() };
+      recorrentes: state.recorrentes, pagamentos: state.pagamentos, exportadoEm:new Date().toISOString() };
     downloadBlob(JSON.stringify(data,null,2), 'livro-caixa-a-dois.json', 'application/json');
   }
   function exportCSV(){
@@ -1841,14 +1909,15 @@
         if (Array.isArray(data.goals)) jobs.push(replaceAllGoals(data.goals));
         if (Array.isArray(data.settlements)) jobs.push(replaceAllSettlements(data.settlements));
         if (Array.isArray(data.recorrentes)) jobs.push(replaceAllRecorrentes(data.recorrentes));
+        if (Array.isArray(data.pagamentos)) jobs.push(replaceAllPagamentos(data.pagamentos));
         Promise.all(jobs).then(function(){ showToast('Dados importados'); render(); });
       } catch(err){ showToast('Arquivo inválido. Exporte um .json deste mesmo painel.'); }
     };
     reader.readAsText(input.files[0]);
   }
   function resetAllData(){
-    Promise.all([ deleteAllInCollection('transactions'), deleteAllInCollection('goals'), deleteAllInCollection('settlements'), deleteAllInCollection('recorrentes') ]).then(function(){
-      if (isDemo()){ state.transactions=[]; state.goals=[]; state.settlements={}; state.recorrentes=[]; }
+    Promise.all([ deleteAllInCollection('transactions'), deleteAllInCollection('goals'), deleteAllInCollection('settlements'), deleteAllInCollection('recorrentes'), deleteAllInCollection('pagamentos') ]).then(function(){
+      if (isDemo()){ state.transactions=[]; state.goals=[]; state.settlements={}; state.recorrentes=[]; state.pagamentos=[]; }
       state.budgets = {};
       return saveHouseholdMeta();
     }).then(function(){ showToast('Todos os dados foram apagados'); render(); });
@@ -1935,18 +2004,6 @@
         break;
       case 'open-add-aporte': openAddAporte(btn.getAttribute('data-id')); break;
       case 'save-aporte': saveAporte(btn.getAttribute('data-id')); break;
-      case 'open-settlement': state.ui.modal = { type:'settlement', decisao:'pago' }; render(); break;
-      case 'modal-set-decisao':
-        state.ui.modal.decisao = btn.getAttribute('data-decisao');
-        state.ui.modal.observacao = document.getElementById('field-settlement-obs') ? document.getElementById('field-settlement-obs').value : state.ui.modal.observacao;
-        state.ui.modal.__noAnim = true;
-        render();
-        break;
-      case 'save-settlement': saveSettlementFromModal(); break;
-      case 'confirm-remove-settlement':
-        state.ui.confirm = { message:'Remover este registro de acerto? A situação volta a ser calculada normalmente pelos lançamentos do mês.', action:'remove-settlement', payload:btn.getAttribute('data-mesano') };
-        render();
-        break;
       case 'open-add-recorrente': state.ui.modal = { type:'recorrente', divisao:'individual' }; render(); break;
       case 'edit-recorrente': state.ui.modal = { type:'recorrente', editingId:btn.getAttribute('data-id') }; render(); break;
       case 'modal-set-rec-divisao':
@@ -1975,6 +2032,13 @@
         render();
         break;
       case 'toggle-ativo-recorrente': toggleAtivoRecorrente(btn.getAttribute('data-id')); break;
+      case 'open-add-pagamento': state.ui.modal = { type:'pagamento' }; render(); break;
+      case 'edit-pagamento': state.ui.modal = { type:'pagamento', editingId:btn.getAttribute('data-id') }; render(); break;
+      case 'save-pagamento': savePagamentoFromModal(btn.getAttribute('data-editing')||null); break;
+      case 'confirm-delete-pagamento':
+        state.ui.confirm = { message:'Remover este pagamento? O saldo entre vocês volta a incluir esse valor como devido.', action:'delete-pagamento', payload:btn.getAttribute('data-id') };
+        render();
+        break;
       case 'set-pessoa': state.ui.pessoaSel = parseInt(btn.getAttribute('data-pessoa'),10); render(); break;
       case 'save-settings': saveSettingsFromForm(); break;
       case 'export-json': exportJSON(); break;
@@ -1996,8 +2060,8 @@
         if (c.action==='delete-goal') deleteGoal(c.payload);
         else if (c.action==='reset-all') resetAllData();
         else if (c.action==='disconnect') disconnectCloud();
-        else if (c.action==='remove-settlement') removeSettlement(c.payload);
         else if (c.action==='delete-recorrente') deleteRecorrente(c.payload);
+        else if (c.action==='delete-pagamento') deletePagamento(c.payload);
         break;
     }
   });
@@ -2017,6 +2081,14 @@
       state.ui.modal.data = document.getElementById('field-data') ? document.getElementById('field-data').value : state.ui.modal.data;
       state.ui.modal.quem = document.getElementById('field-quem') ? document.getElementById('field-quem').value : state.ui.modal.quem;
       state.ui.modal.descricao = document.getElementById('field-descricao') ? document.getElementById('field-descricao').value : state.ui.modal.descricao;
+      state.ui.modal.__noAnim = true;
+      render();
+    }
+    if (e.target.id === 'field-pag-pagador' && state.ui.modal && state.ui.modal.type === 'pagamento'){
+      state.ui.modal.pagador = e.target.value;
+      state.ui.modal.valor = document.getElementById('field-pag-valor') ? document.getElementById('field-pag-valor').value : state.ui.modal.valor;
+      state.ui.modal.data = document.getElementById('field-pag-data') ? document.getElementById('field-pag-data').value : state.ui.modal.data;
+      state.ui.modal.observacao = document.getElementById('field-pag-obs') ? document.getElementById('field-pag-obs').value : state.ui.modal.observacao;
       state.ui.modal.__noAnim = true;
       render();
     }
